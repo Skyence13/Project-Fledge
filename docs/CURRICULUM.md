@@ -16,7 +16,7 @@ The current deterministic two-choice lesson has a simple association solution th
 
 ## Memory experiments available in the lab
 
-The second curriculum, `wisp-delay-retention-v2`, is a bounded evaluation of an archived population. Each inherited genome starts fresh lifetimes and learns within them. The original population can stay paused. Reproductive selection still uses the version-one curriculum. Select **Memory experiments** in Godot or run `python -m wisp.memory_experiment --help` for batch evaluation of specific generations and founder seeds.
+The memory study, `wisp-delay-retention-v2`, is a bounded evaluation of an archived population. Each inherited genome starts fresh lifetimes and learns within them. The original population can stay paused. The **Evolution lab** continues to select on the version-one curriculum. Select **Memory experiments** in Godot or run `python -m wisp.memory_experiment --help` for batch evaluation of specific generations and founder seeds.
 
 | Experiment | Teaching and probes | Measurement |
 | --- | --- | --- |
@@ -26,7 +26,40 @@ The second curriculum, `wisp-delay-retention-v2`, is a bounded evaluation of an 
 
 The four possible assignments of left and right choices are equally represented, and either cue can play the role of A. The Wisp receives a cue and a signed grade. The association reference knows the scheduled feedback delay and can look up its own earlier choice. The fixed reflex, disabled-plasticity Wisp and Wisp receiving unrelated feedback establish comparison scores. The first response contributes to the four-probe score. Pooled counts include repeated trials on the same genomes. A change across delays measures performance with intervening stimuli and choices, rather than decay over elapsed seconds.
 
-Before enabling reproductive selection on a harder curriculum, compare early and late saved populations on the same sequences across independent founder seeds. Choose the training objective, budget and retention criterion on development runs, reserve separate evaluation seeds, and keep the original reversal test as a check for lost skills. A lineage fork currently resumes the same curriculum with a new mutation stream.
+## Evolution under delayed feedback
+
+The delayed-feedback campaign starts from the inherited genomes of a completed population. Changing the selection objective lets us ask whether descendants become better at learning from a late grade. Each candidate starts a fresh lifetime for each test. A Wisp makes a source choice, acts on intervening cues, then receives approval or correction for the source choice. Ungraded recall probes measure what it learned. Pairing each cue assignment with its opposite prevents an always-left or always-right policy from earning more than 50% across the pair.
+
+Use immediate recall and recall after reversing the original rule as separate checks. A population that loses reversal learning while improving its delayed score has traded one capability for another. Even strong scores on all three measure behavior on these two cues. To identify a mechanism, reproduce the result across independently founded campaigns and intervene on candidate circuits in saved copies.
+
+| Stage | What changes | What carries forward |
+| --- | --- | --- |
+| One intervening choice | Approval arrives after one ungraded action. | The original immediate and reversal recall tests. |
+| Three intervening choices | The Wisp makes three ungraded choices before the grade arrives. | The original tests and the one-choice delay. |
+| Five intervening choices | The Wisp makes five ungraded choices before the grade arrives. | The original tests and both preceding delays. |
+
+Each generation sees four new, matched training sequence pairs with opposite cue assignments. Repeated teaching can produce good recall even when the learner applies every grade to its latest choice. A second test starts a fresh Wisp, presents cue A once, fills the delay with ungraded choices on cue B, grades the original choice, then asks for A again immediately. Both source cues and both target actions are tested. An association table that updates only the latest cue scores 50% on this one-shot test. An association table that tracks the announced delay can reach 100%.
+
+| Ability | Weight in parent selection | Accuracy required for promotion |
+| --- | ---: | ---: |
+| First recall of the once-graded source cue | 40% | 75% |
+| Recall after repeated delayed teaching on opposite targets | 30% | 90% |
+| Original immediate recall | 15% | 90% |
+| Original recall after reteaching a reversed rule | 15% | 90% |
+
+At review, nominate the candidate from training scores before looking at its validation performance. Check each ability separately using 16 fresh sequence pairs for validation and 32 for independent confirmation. Earlier delays must also meet their thresholds. The fixed reflex, the Wisp with plasticity disabled and the Wisp receiving uninformative feedback provide comparison scores. Passing establishes a reason to increase difficulty in this campaign. The many responses from one candidate do not constitute independent evolutionary replicates.
+
+The default review interval is five rounds. A single successful validation starts a streak. The training-selected nominee can differ between reviews. Two consecutive successful reviews trigger an independent confirmation of the second nominee. A confirmed stage advances to the next delay. A stage that reaches 60 rounds without confirmation stops for review, and the last confirmed stage completes the campaign. A later reviewer can use the saved genomes and results to choose the next question. For example, repeated success at a fixed delay motivates varying the delay between trials. If recall stalls, first compare the candidate with the controls and inspect which ability failed before increasing difficulty.
+
+## Testing a longer-lived eligibility trace
+
+The original learning rule overwrites its synaptic eligibility values on each choice. Its recurrent units carry activity between choices, but they do not receive a copy of the sampled action. This matters when a Wisp turns left, makes another choice, then receives approval for the earlier turn. Good recall after repeated teaching can coexist with chance-level recall after one late grade.
+
+At a stalled stage, the local supervisor forks the evaluated population into two campaigns. Both start from the same archived genomes with zero trace persistence. The control arm keeps the original set of mutations. In the experimental arm, each rules-enabled offspring undergoing mutation has a 50% chance to spend its usual neuron-rule mutation on trace persistence. On the first such mutation, the decay factor is drawn uniformly from 0.20 to 0.95. Subsequent mutations perturb it within 0 to 0.95. On every choice the Wisp adds current signed eligibility to the previous trace multiplied by that factor. A grade updates the eligible synapses and clears the accumulated trace. Both arms retain the paired cue assignments, training and evaluation banks, mutation conditions and checks for old skills.
+
+The supervisor advances each arm by up to five rounds per check. Once either arm qualifies, it saves both arms' results at the same round. The comparison ends at this checkpoint or at 60 rounds per arm. Examine the one-shot source measure, delayed block recall, immediate recall and reversal recall for both arms at that matched endpoint. For a nominee with positive trace decay, the review also scores an otherwise identical copy with the decay factor set to zero on the same sequences. This ablation measures how much the behavior depends on the trace on this test and has no weight in promotion decisions.
+
+Each qualified arm can continue through the remaining stages under the existing validation and confirmation rules. An unqualified arm stays at the comparison checkpoint. Use the saved matched result for a direct comparison because later follow-up scores can reflect different challenges and training budgets. The local worker stops for research review if neither arm qualifies by the common limit or once all qualified arms have finished or exhausted their remaining stages. Broader conclusions require replicate campaigns with fresh seeds and independently founded lineages.
 
 ## When to experiment with brain structures
 

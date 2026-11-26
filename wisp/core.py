@@ -12,6 +12,7 @@ MOTORS = (0, 1)
 MAX_NODES = 12
 MAX_EDGES = 64
 WEIGHT_LIMIT = 3.0
+MAX_TRACE_DECAY = .95
 
 
 def _bound(value, low, high):
@@ -38,20 +39,28 @@ class Genome:
     nodes: tuple[Neuron, ...]
     edges: tuple[Connection, ...]
     learning_rate: float
+    trace_decay: float = 0.0
 
     def to_dict(self) -> dict:
-        return {
+        data = {
             "nodes": [asdict(node) for node in self.nodes],
             "edges": [asdict(edge) for edge in self.edges],
             "learning_rate": self.learning_rate,
         }
+        if self.trace_decay:
+            data["trace_decay"] = self.trace_decay
+        return data
 
     @classmethod
     def from_dict(cls, data: dict) -> Genome:
+        decay = data.get("trace_decay", 0.0)
+        if type(decay) not in (int, float) or not 0 <= decay <= MAX_TRACE_DECAY:
+            raise ValueError("invalid eligibility trace decay")
         genome = cls(
             tuple(Neuron(**item) for item in data["nodes"]),
             tuple(Connection(**item) for item in data["edges"]),
             float(data["learning_rate"]),
+            float(decay),
         )
         ids = {node.id for node in genome.nodes}
         pairs = {(edge.source, edge.target) for edge in genome.edges}
@@ -127,11 +136,15 @@ def _change_wiring(nodes, edges, rng):
                           Connection(new_id, previous.target, previous.weight)])
 
 
-def mutate(genome: Genome, rng: random.Random, *, rules: bool, wiring: bool) -> Genome:
+def mutate(genome: Genome, rng: random.Random, *, rules: bool, wiring: bool,
+           evolve_trace: bool = False) -> Genome:
     """Create an offspring from inherited parameters, never from lifetime weights."""
     nodes, edges = list(genome.nodes), list(genome.edges)
     if wiring:
         _change_wiring(nodes, edges, rng)
+    # Preserve the post-wiring neuron list if this offspring later spends its
+    # single rule mutation on trace decay. Other mutation draws stay matched.
+    before_rule = nodes.copy() if rules and evolve_trace else None
     if rules:
         index = rng.randrange(len(nodes))
         node = nodes[index]
@@ -151,7 +164,14 @@ def mutate(genome: Genome, rng: random.Random, *, rules: bool, wiring: bool) -> 
         weight = _bound(edge.weight + rng.gauss(0, .26), -WEIGHT_LIMIT, WEIGHT_LIMIT)
         edges[index] = replace(edge, weight=weight)
     rate = _bound(genome.learning_rate * math.exp(rng.gauss(0, .17)), .01, .95)
-    return Genome(tuple(nodes), tuple(edges), rate)
+    decay = genome.trace_decay
+    if before_rule is not None and rng.random() < .5:
+        nodes = before_rule
+        if not decay:
+            decay = rng.uniform(.20, MAX_TRACE_DECAY)
+        else:
+            decay = _bound(decay + rng.gauss(0, .20), 0.0, MAX_TRACE_DECAY)
+    return Genome(tuple(nodes), tuple(edges), rate, decay)
 
 
 class Wisp:
@@ -197,12 +217,17 @@ class Wisp:
         delta = self._activation[self._outputs[1]] - self._activation[self._outputs[0]]
         probability_one = 1 / (1 + math.exp(-2.2 * delta))
         action = int(self._rng.random() < probability_one)
-        # An opponent-coded motor decision leaves a pre/post trace until feedback arrives.
+        # An ungraded action contributes its own signed pre/post trace. An
+        # inherited decay keeps part of earlier actions' eligibility until grading.
+        decay = self.genome.trace_decay
+        previous = self._eligibility
         self._eligibility = [0.0] * len(self.genome.edges)
         for i, edge in enumerate(self.genome.edges):
             if edge.target in MOTORS:
                 direction = 1 if edge.target == action else -1
                 self._eligibility[i] = direction * presynaptic[i]
+                if decay:
+                    self._eligibility[i] += decay * previous[i]
         self._pending = True
         self.last_cue = cue
         self.last_action = action
@@ -220,13 +245,15 @@ class Wisp:
                 change = value * trace - .4 * abs(trace) * weight
                 self._weights[i] = _bound(weight + self.genome.learning_rate * change,
                                           -WEIGHT_LIMIT, WEIGHT_LIMIT)
+        if self.genome.trace_decay:
+            self._eligibility = [0.0] * len(self._eligibility)
         self._pending = False
         self.trials += 1
 
     def checkpoint(self) -> dict:
         version, state, gaussian = self._rng.getstate()
         return {
-            "version": 1, "genome": self.genome.to_dict(), "plastic": self.plastic,
+            "version": 2 if self.genome.trace_decay else 1, "genome": self.genome.to_dict(), "plastic": self.plastic,
             "trials": self.trials, "rng": [version, list(state), gaussian],
             "weights": self._weights.copy(), "activation": self._activation.copy(),
             "adaptation": self._adaptation.copy(), "eligibility": self._eligibility.copy(),
@@ -235,9 +262,11 @@ class Wisp:
 
     @classmethod
     def restore(cls, data: dict) -> Wisp:
-        if data["version"] != 1:
+        if data["version"] not in (1, 2):
             raise ValueError("unsupported Wisp checkpoint version")
         wisp = cls(Genome.from_dict(data["genome"]), plastic=data["plastic"])
+        if (data["version"] == 2) != bool(wisp.genome.trace_decay):
+            raise ValueError("Wisp checkpoint version does not match its eligibility rule")
         for name in ("weights", "activation", "adaptation", "eligibility"):
             values = list(data[name])
             if len(values) != len(getattr(wisp, "_" + name)) or not all(map(math.isfinite, values)):

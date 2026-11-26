@@ -7,10 +7,12 @@ const GROUP_NAMES := ["Wisp", "Plasticity off", "Random feedback", "Association"
 const AMBER := Color("#f4ca8e")
 
 var http := HTTPRequest.new()
+var campaign_http := HTTPRequest.new()
 var poll := Timer.new()
 var snapshot: Dictionary = {}
 var report: Dictionary = {}
 var busy := false
+var campaign_busy := false
 var reading_start := false
 var online := false
 var report_key := ""
@@ -21,6 +23,14 @@ var source_label := Label.new()
 var error_label := Label.new()
 var progress := ProgressBar.new()
 var plan_cards := BoxContainer.new()
+var campaign_status := Label.new()
+var campaign_source := Label.new()
+var campaign_evidence := Label.new()
+var supervision_box := VBoxContainer.new()
+var supervision_status := Label.new()
+var supervision_details := Label.new()
+var supervision_button := Button.new()
+var supervision_paused := false
 var result_box := VBoxContainer.new()
 var result_note := Label.new()
 var result_table := Tree.new()
@@ -40,7 +50,22 @@ func _ready() -> void:
 	page.add_theme_constant_override("separation", 11)
 	inset.add_child(page)
 	_label(page, Label.new(), "Memory experiments", 25)
-	_label(page, Label.new(), "Evaluate the latest completed population on two new lessons. Each genome starts a fresh Wisp for each test. The active evolutionary run can continue.", 15, Kit.MUTED)
+	var campaign := _card(page)
+	_label(campaign, Label.new(), "Evolution campaign", 19)
+	_label(campaign, campaign_status, "Reading campaign status…", 16, Kit.ACCENT)
+	_label(campaign, campaign_source, "", 14, Kit.MUTED)
+	_label(campaign, campaign_evidence, "", 14)
+	campaign_source.hide()
+	campaign_evidence.hide()
+	campaign.add_child(supervision_box)
+	_label(supervision_box, supervision_status, "", 16, Kit.ACCENT)
+	_label(supervision_box, supervision_details, "", 14)
+	supervision_button.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	supervision_button.pressed.connect(_toggle_supervision)
+	supervision_box.add_child(supervision_button)
+	supervision_box.hide()
+	_label(page, Label.new(), "Archived population assessment", 19)
+	_label(page, Label.new(), "These two tests run once on fresh copies of the latest completed population in the Evolution lab.", 15, Kit.MUTED)
 	plan_cards.add_theme_constant_override("separation", 11)
 	page.add_child(plan_cards)
 	var delayed := _card(plan_cards)
@@ -92,6 +117,9 @@ func _ready() -> void:
 	add_child(http)
 	http.timeout = 12.0
 	http.request_completed.connect(_received)
+	add_child(campaign_http)
+	campaign_http.timeout = 12.0
+	campaign_http.request_completed.connect(_campaign_received)
 	add_child(poll)
 	poll.wait_time = 1.0
 	poll.timeout.connect(_refresh)
@@ -142,8 +170,131 @@ func _layout() -> void:
 	narrow_results.visible = not report.is_empty() and size.x < 945
 
 func _refresh() -> void:
-	if is_visible_in_tree() and is_node_ready() and not busy:
+	if not is_visible_in_tree() or not is_node_ready():
+		return
+	if not campaign_busy:
+		_campaign_request()
+	if not busy:
 		_request(false)
+
+func _show_campaign_message(message: String) -> void:
+	campaign_status.text = message
+	campaign_source.hide()
+	campaign_evidence.hide()
+	supervision_box.hide()
+
+func _campaign_request(action := "") -> void:
+	var path := "/lab/campaign" if action.is_empty() else "/lab/campaign/" + action
+	var method := HTTPClient.METHOD_GET if action.is_empty() else HTTPClient.METHOD_POST
+	var err := campaign_http.request(Address.base_url() + path, ["Content-Type: application/json"], method, "" if action.is_empty() else "{}")
+	campaign_busy = err == OK
+	supervision_button.disabled = campaign_busy
+	if not campaign_busy:
+		_show_campaign_message("Campaign status unavailable. Retrying…")
+
+func _toggle_supervision() -> void:
+	if not campaign_busy and supervision_box.visible:
+		_campaign_request("resume" if supervision_paused else "pause")
+
+func _campaign_received(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+	campaign_busy = false
+	supervision_button.disabled = false
+	var data = JSON.parse_string(body.get_string_from_utf8()) if body.size() > 0 else null
+	if result != HTTPRequest.RESULT_SUCCESS or code != 200 or typeof(data) != TYPE_DICTIONARY:
+		var message := "Campaign status unavailable. Retrying…"
+		if typeof(data) == TYPE_DICTIONARY:
+			message = str(data.get("error", message))
+		_show_campaign_message(message)
+		return
+	var state := str(data.get("state", ""))
+	if state == "absent":
+		_show_campaign_message("No evolution campaign is attached to this lab.")
+		return
+	if state not in ["ready", "paused", "review", "complete"]:
+		_show_campaign_message("Unrecognized campaign status.")
+		return
+	var completed := int(data.generation)
+	var title := "%s  ·  Stage %d: %s" % [str(data.name), int(data.stage) + 1, str(data.stage_label)]
+	var source: Dictionary = data.source
+	campaign_source.text = "Source: %s, generation %d (original reversal lesson)  ·  Campaign generations completed: %d" % [
+		str(source.branch_name), int(source.generation), completed]
+	campaign_source.show()
+	var details := PackedStringArray()
+	if state == "ready":
+		campaign_status.text = "%s  ·  Eligible for training" % title
+		var interval := maxi(1, int(data.validation_interval))
+		var stage_generation := int(data.stage_generations)
+		var remaining := mini(interval - stage_generation % interval, int(data.stage_budget) - stage_generation)
+		details.append("Next review at campaign generation %d  ·  Consecutive validation passes: %d/%d" % [
+			completed + remaining, int(data.streak), int(data.required_passes)])
+	else:
+		var state_name: String = {"complete": "Completed", "review": "Waiting for review", "paused": "Paused"}[state]
+		campaign_status.text = "%s  ·  %s" % [title, state_name]
+		details.append(str(data.reason))
+	var review = data.get("last_review")
+	if typeof(review) == TYPE_DICTIONARY:
+		details.append("Validation at generation %d (%s): %s" % [
+			int(review.generation), str(review.label), _campaign_scores(review.validation)])
+		var confirmation = review.get("confirmation")
+		if typeof(confirmation) == TYPE_DICTIONARY:
+			details.append("Independent confirmation: " + _campaign_scores(confirmation))
+	campaign_evidence.text = "\n".join(details)
+	campaign_evidence.show()
+	_render_supervision(data.get("supervision"))
+
+func _render_supervision(watch) -> void:
+	supervision_box.visible = typeof(watch) == TYPE_DICTIONARY
+	if not supervision_box.visible:
+		return
+	supervision_paused = bool(watch.get("paused", false))
+	supervision_button.text = "Resume supervision" if supervision_paused else "Pause supervision"
+	supervision_button.tooltip_text = "Supervised training checks this setting before each generation."
+	var phase: String = {"primary": "Primary campaign", "comparison": "Paired comparison",
+		"followup": "Training confirmed branches", "research_review": "Research review"}.get(str(watch.get("phase", "")), "Pending")
+	supervision_status.text = "Supervision  ·  %s%s" % [phase, "  ·  Paused" if supervision_paused else ""]
+	var lines := PackedStringArray()
+	var message := str(watch.get("message", ""))
+	if supervision_paused:
+		lines.append("Training is on hold. A generation already in progress can finish.")
+	elif not message.is_empty():
+		lines.append(message)
+	var comparison = watch.get("comparison_result")
+	var qualified: Array = watch.get("qualified", [])
+	if typeof(comparison) == TYPE_DICTIONARY:
+		var names := PackedStringArray()
+		for arm_key in qualified:
+			names.append(_arm_name(str(arm_key)))
+		lines.append("Matched comparison closed at generation %d. Qualified to continue: %s." % [
+			int(comparison.generation), ", ".join(names) if not names.is_empty() else "none"])
+	var arms: Dictionary = watch.get("arms", {})
+	for key in ["legacy", "trace"]:
+		var arm = arms.get(key)
+		if typeof(arm) != TYPE_DICTIONARY:
+			continue
+		var state_name := str(arm.state).capitalize()
+		if typeof(comparison) == TYPE_DICTIONARY and key not in qualified:
+			state_name = "Held at matched endpoint"
+		lines.append("%s  ·  %s  ·  Generation %d  ·  %s" % [
+			_arm_name(key), str(arm.stage_label), int(arm.generation), state_name])
+		var review = arm.get("last_review")
+		if typeof(review) == TYPE_DICTIONARY:
+			var tested := str(review.get("label", "previous challenge" if review.get("decision") == "promote" else arm.stage_label))
+			lines.append("   Validation at generation %d (%s): %s" % [int(review.generation), tested, _campaign_scores(review)])
+			var confirmation = review.get("confirmation")
+			if typeof(confirmation) == TYPE_DICTIONARY:
+				lines.append("   Independent confirmation: " + _campaign_scores(confirmation))
+		else:
+			lines.append("   Awaiting first validation.")
+	supervision_details.text = "\n".join(lines)
+	supervision_details.visible = not lines.is_empty()
+
+func _arm_name(key: String) -> String:
+	return "Recent-choice control" if key == "legacy" else "Evolvable eligibility trace"
+
+func _campaign_scores(scores: Dictionary) -> String:
+	return "one-shot credit %s, delayed %s, immediate %s, reversal %s" % [
+		_score_text(scores.get("credit")), _score_text(scores.get("delayed")),
+		_score_text(scores.get("immediate")), _score_text(scores.get("reversal"))]
 
 func _start() -> void:
 	if not busy and online and snapshot.get("eligible", false) and snapshot.get("status") != "running":

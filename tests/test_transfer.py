@@ -1,4 +1,5 @@
 import csv
+from contextlib import closing
 from hashlib import sha256
 import io
 import json
@@ -7,13 +8,18 @@ from random import Random
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 from zipfile import ZipFile
 
+from wisp import campaign
 from wisp.core import Wisp, random_genome
+from wisp.campaign import fork_campaign, init_campaign, pause_campaign, read_status, resume_campaign, run_campaign
+from wisp.campaign_watch import read_watch_status, set_watch_paused, watch_tick
 from wisp.lab import LabController
 from wisp.lineage import LineageArchive
 from wisp.next_plan import run_next_plan
-from wisp.transfer import (DATABASE, FILES, GENERATIONS, MANIFEST, PERSONAL, SUMMARY,
+from wisp.transfer import (CAMPAIGN, CAMPAIGN_DIR, COMPARISONS, DATABASE, FILES, GENERATIONS,
+                           HOLD, MANIFEST, PERSONAL, SUMMARY, SUPERVISOR,
                            export_lab, import_lab)
 
 
@@ -49,7 +55,7 @@ class TransferTests(unittest.TestCase):
         files.update(edits)
         if rehash:
             manifest = json.loads(files[MANIFEST])
-            for path in FILES:
+            for path in manifest["files"]:
                 data = files[path]
                 manifest["files"][path] = {"size": len(data), "sha256": sha256(data).hexdigest()}
             files[MANIFEST] = json.dumps(manifest).encode()
@@ -133,6 +139,139 @@ class TransferTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "schema"):
             import_lab(bad, self.root / "not-created")
         self.assertFalse((self.root / "not-created").exists())
+
+    def test_campaign_export_at_committed_round_restores_and_resumes(self):
+        source = {"kind": "archive", "branch_id": self.child_id, "branch_name": "Transfer test",
+                  "origin_branch_id": self.branch, "generation": 1}
+        run = self.root / "source-campaign"
+        init_campaign(run, self.archive.snapshot(self.child_id, 1), source, name="Memory", seed=23)
+        run_campaign(run, 1)
+        db_path = run / "campaign.sqlite3"
+        writer = sqlite3.connect(db_path)
+        try:
+            writer.execute("PRAGMA journal_mode=WAL")
+            paused = pause_campaign(run)  # The committed pause is still in the WAL at export.
+            writer.execute("BEGIN IMMEDIATE")
+            writer.execute("DELETE FROM rounds")
+            self.bundle = export_lab(self.archive, self.child_id, self.child.checkpoint(),
+                                     self.personal.checkpoint(), self.root / "exports", campaign_path=db_path)
+        finally:
+            writer.rollback()
+            writer.close()
+        with ZipFile(self.bundle) as package:
+            self.assertEqual(set(package.namelist()), {MANIFEST, CAMPAIGN, *FILES})
+            payload = package.read(CAMPAIGN)
+            self.assertEqual(sha256(payload).hexdigest(), json.loads(package.read(MANIFEST))["files"][CAMPAIGN]["sha256"])
+        imported = import_lab(self.bundle, self.root / "with-campaign")
+        copied_run = (imported / CAMPAIGN).parent
+        self.assertEqual(read_status(copied_run), paused)
+        self.assertEqual(run_campaign(copied_run, 2), paused)
+        resume_campaign(copied_run)
+        resume_campaign(run)
+        self.assertEqual(run_campaign(copied_run, 2)["last_training"], run_campaign(run, 2)["last_training"])
+        with (closing(sqlite3.connect(copied_run / "campaign.sqlite3")) as copied,
+              closing(sqlite3.connect(db_path)) as original):
+            for query in ("SELECT * FROM rounds ORDER BY generation", "SELECT population FROM tip"):
+                self.assertEqual(copied.execute(query).fetchall(), original.execute(query).fetchall())
+        fork = self.root / "campaign-fork"
+        forked = fork_campaign(fork, run, 2, stage=1, name="Next challenge", seed=41)
+        fork_zip = export_lab(self.archive, self.child_id, self.child.checkpoint(), self.personal.checkpoint(),
+                              self.root / "exports", campaign_path=fork / "campaign.sqlite3")
+        restored_fork = import_lab(fork_zip, self.root / "with-fork")
+        self.assertEqual(read_status((restored_fork / CAMPAIGN).parent), forked)
+        rebuilt = self.root / "altered-campaign.sqlite3"
+        rebuilt.write_bytes(payload)
+        connection = sqlite3.connect(rebuilt)
+        try:
+            connection.execute("UPDATE tip SET status=json_set(status,'$.source.population_sha256','wrong')")
+            connection.commit()
+        finally:
+            connection.close()
+        bad = self.copy_package("wrong-campaign.zip", {CAMPAIGN: rebuilt.read_bytes()}, rehash=True)
+        with self.assertRaisesRegex(ValueError, "fingerprint"):
+            import_lab(bad, self.root / "bad-campaign")
+        self.assertFalse((self.root / "bad-campaign").exists())
+
+    def test_supervisor_preserves_partial_pair_and_global_pause_then_resumes_both_arms(self):
+        source = {"kind": "archive", "branch_id": self.child_id, "branch_name": "Transfer test",
+                  "origin_branch_id": self.branch, "generation": 1}
+        run = self.root / "primary-campaign"
+
+        def export(directory):
+            return export_lab(self.archive, self.child_id, self.child.checkpoint(), self.personal.checkpoint(),
+                              self.root / "exports", campaign_path=directory / "campaign.sqlite3")
+
+        with patch("wisp.campaign.STAGE_BUDGET", 1), patch("wisp.campaign.VALIDATE_EVERY", 1):
+            init_campaign(run, self.archive.snapshot(self.child_id, 1), source, name="Memory", seed=23)
+            run_campaign(run, 1)
+            self.assertEqual(watch_tick(run)["phase"], "comparison")
+            state = json.loads((run / "supervisor" / "state.json").read_bytes())
+            # Simulate a shutdown between the two idempotent child initializations.
+            fork_campaign(run / "comparison" / "legacy", run, state["generation"], stage=state["parent_stage"],
+                          name="Delayed feedback / legacy", seed=state["paired_seed"])
+            # The second process created the file but crashed before its SQLite transaction committed.
+            empty_arm = run / "comparison" / "trace"
+            empty_arm.mkdir()
+            (empty_arm / "campaign.sqlite3").touch()
+            set_watch_paused(run, True)
+            incomplete = export(run)
+            with ZipFile(incomplete) as package:
+                self.assertEqual(set(package.namelist()), {MANIFEST, *FILES, CAMPAIGN, COMPARISONS[0], SUPERVISOR, HOLD})
+            imported = import_lab(incomplete, self.root / "interrupted") / CAMPAIGN_DIR
+            self.assertTrue(watch_tick(imported)["paused"])
+            self.assertFalse((imported / "comparison" / "trace").exists())
+            set_watch_paused(imported, False)
+            summary = watch_tick(imported)
+            self.assertEqual(summary["phase"], "research_review")
+            self.assertEqual({arm: v["generation"] for arm, v in summary["arms"].items()}, {"legacy": 1, "trace": 1})
+            self.bundle = export(imported)
+        copied = import_lab(self.bundle, self.root / "both") / CAMPAIGN_DIR
+        self.assertEqual(read_watch_status(copied), summary)
+        for arm in ("legacy", "trace"):
+            self.assertEqual(read_status(copied / "comparison" / arm), read_status(imported / "comparison" / arm))
+        with ZipFile(self.bundle) as package:
+            self.assertEqual(set(package.namelist()), {MANIFEST, *FILES, CAMPAIGN, *COMPARISONS, SUPERVISOR})
+            cursor = json.loads(package.read(SUPERVISOR))
+        cursor["generation"] += 1
+        malformed = self.copy_package("wrong-cursor.zip", {SUPERVISOR: json.dumps(cursor).encode()}, rehash=True)
+        with self.assertRaisesRegex(ValueError, "cursor"):
+            import_lab(malformed, self.root / "invalid-cursor")
+        self.assertFalse((self.root / "invalid-cursor").exists())
+
+    def test_followup_keeps_frozen_confirmation_and_resumes_only_the_qualified_arm(self):
+        run = self.root / "followup"
+        source = {"kind": "archive", "branch_id": self.child_id, "branch_name": "Transfer test",
+                  "origin_branch_id": self.branch, "generation": 1}
+        real_validate = campaign.evolution.validate_champion
+
+        def deterministic_decision(directory, through):
+            def validate(*args, **kwargs):
+                report = real_validate(*args, **kwargs)
+                report["passed"] = directory.name == "trace"
+                return report
+            with patch.object(campaign.evolution, "validate_champion", validate):
+                return run_campaign(directory, through)
+
+        with (patch("wisp.campaign.STAGE_BUDGET", 2), patch("wisp.campaign.VALIDATE_EVERY", 1),
+              patch("wisp.campaign_watch.BATCH", 1), patch.object(campaign, "run_campaign", deterministic_decision)):
+            init_campaign(run, self.archive.snapshot(self.child_id, 1), source, name="Primary", seed=15)
+            for _ in range(5):
+                status = watch_tick(run)
+            self.assertEqual((status["phase"], status["stop_round"], status["qualified"]), ("followup", 2, ["trace"]))
+            self.assertEqual(status["arms"]["trace"]["generation"], 3)
+            self.bundle = export_lab(self.archive, self.child_id, self.child.checkpoint(), self.personal.checkpoint(),
+                                     self.root / "exports", campaign_path=run / "campaign.sqlite3")
+            imported = import_lab(self.bundle, self.root / "transferred-followup") / CAMPAIGN_DIR
+            self.assertEqual(read_watch_status(imported), status)
+            later = watch_tick(imported)
+            self.assertEqual(later["comparison_result"], status["comparison_result"])
+            self.assertEqual([later["arms"][arm]["generation"] for arm in ("legacy", "trace")], [2, 4])
+        with ZipFile(self.bundle) as package:
+            cursor = json.loads(package.read(SUPERVISOR))
+        cursor["comparison_result"]["qualified"] = cursor["qualified"] = ["legacy"]
+        bad = self.copy_package("ineligible-arm.zip", {SUPERVISOR: json.dumps(cursor).encode()}, rehash=True)
+        with self.assertRaisesRegex(ValueError, "confirmations"):
+            import_lab(bad, self.root / "bad-qualification")
 
     def test_latest_memory_study_round_trip_and_path_injection_rejection(self):
         source = {"branch_id": self.child_id, "branch_name": "Transfer test",

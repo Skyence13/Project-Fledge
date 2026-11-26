@@ -57,6 +57,59 @@ python -m wisp.memory_experiment --founder-seed 7 --population 16 --seed 41 --re
 
 The lab saves each completed study as JSON beside the lineage database. A portable export includes the most recent successful study and restores it in the destination lab. To transfer additional studies, copy their JSON files separately.
 
+### Evolve a population for delayed feedback
+
+Use a **campaign** to breed descendants of a saved population on a harder lesson. The first stage delivers each grade after one intervening choice. Later stages delay the grade by three and five choices. Each stage tests repeated teaching and a single late grade for a cue the Wisp then sees again. At each review, the candidate must also recall the original rule, learn its reversal and retain the earlier delays. The original lineage can stay paused at its saved trial. The **Memory experiments** tab displays campaign progress for the current save.
+
+Start once from a completed generation. With the lab open, use **Lineages → Export run**, then substitute that ZIP path in the example below. This example enrolls generation 2,212 of the original lineage. Choose a completed generation that exists in your archive. With the lab closed, you can replace `--export runs/exports/lab.zip` with `--archive runs/personal.json.lineages.sqlite3`.
+
+```sh
+python -m wisp.campaign init --export runs/exports/lab.zip --branch main --generation 2212 --run runs/personal.json.campaign --name "Delayed feedback" --seed 20261126
+python -m wisp.campaign run --run runs/personal.json.campaign --through 10
+python -m wisp.campaign status --run runs/personal.json.campaign
+```
+
+Round 1 evaluates the enrolled genomes under the new objective. Later rounds evaluate their descendants. `--through 10` means finish round 10, including rounds already saved. Repeating that command after an interruption resumes from the last completed round. To continue, choose a higher target, for example `--through 20`. Each invocation accepts up to 20 additional rounds. A batch stops at its target or when the campaign reaches a terminal review. A second writer cannot take over a running batch.
+
+To hold the campaign, use the command below. The last committed round is safe to resume. An interrupted round can be recomputed. The hold persists between batches. Use `resume` when you want subsequent batches to proceed.
+
+```sh
+python -m wisp.campaign pause --run runs/personal.json.campaign
+python -m wisp.campaign resume --run runs/personal.json.campaign
+```
+
+The default campaign reviews a candidate every five rounds. Promotion requires two consecutive successful reviews and independent confirmation. A stage that reaches 60 rounds without promotion stops for review. Completing all three stages also stops the campaign. Read the scores and counts for each ability before extending the curriculum. See the [curriculum review plan](docs/CURRICULUM.md).
+
+### Monitor a campaign and test the next challenge
+
+After initializing the campaign, start its local supervisor from the repository root. It runs while this process is open and the computer is awake. The default interval between checks is five minutes.
+
+```sh
+python -m wisp.campaign_watch --run runs/personal.json.campaign
+```
+
+Each check advances at most five rounds per active population. If the primary campaign exhausts a stage's budget, the supervisor enrolls its archived population in a paired experiment. One arm keeps the original learning rule. In the other, rules-enabled descendants can inherit a mutation that preserves part of the synaptic trace of earlier choices. Both arms start with the same genomes, lesson seeds and population size.
+
+When either arm qualifies, the supervisor records both results at the same round. Each qualified arm automatically advances through the remaining three- or five-choice challenges. Any arm that missed the cutoff stays at the comparison checkpoint. If neither arm qualifies within 60 rounds, or all qualified arms finish or exhaust a later stage's budget, the worker stops for research review. See [how to interpret the paired comparison](docs/CURRICULUM.md#testing-a-longer-lived-eligibility-trace).
+
+**Memory experiments → Evolution campaign** shows the current phase and each arm's results. Use **Pause supervision** to hold the entire experiment and **Resume supervision** to clear the hold. The same operations are available from another terminal.
+
+```sh
+python -m wisp.campaign_watch --run runs/personal.json.campaign --status
+python -m wisp.campaign_watch --run runs/personal.json.campaign --pause
+python -m wisp.campaign_watch --run runs/personal.json.campaign --resume
+```
+
+The global hold persists across restarts. An in-flight generation can finish. A hold on a single arm via `wisp.campaign pause` is separate. To try one bounded check while the worker is stopped, use `--once --tick-id manual-001`. An immediate retry with the same ID preserves the completed batch. To continue unattended, relaunch the foreground command. A hosted review can report on evidence accessible to its environment. The local process performs the evolutionary work and applies stage changes on this PC.
+
+For a separate research experiment, fork a completed **campaign round** into a fresh directory. The parent round numbers in this command belong to the delayed-feedback campaign. The stage numbers 1, 2 and 3 correspond to delays of one, three and five intervening choices. To allow trace mutation on this new branch, add `--evolve-trace` when initializing the fork.
+
+```sh
+python -m wisp.campaign fork --parent runs/personal.json.campaign --generation 20 --stage 2 --name "Longer delay" --seed 20261127 --run runs/longer-delay.campaign
+```
+
+**Lineages → Export run** includes the default campaign beside the personal save, its supervision record and hold, and each initialized comparison arm. Import restores their committed progress beside the destination save. A freshly imported copy needs a local worker to continue. For a standalone backup or a custom location, hold supervision, let outstanding work finish, stop the worker and copy the entire `.campaign` directory. On the destination, check status and clear intentional holds when ready. Each copy has its own history. The automatic-training switch on the **Evolution lab** tab controls the original lineage.
+
 ### Inspect history or start a branch
 
 Open **Lineages**, select a lineage, then a saved generation. You can inspect its final population and fitness while the active population continues. Give the new lineage a name and choose **Branch from here**. Branching from generation 5 opens generation 6 with fresh offspring. The new lineage inherits the selected parents and its own reproducible mutation stream. The lesson schedule remains matched for comparison.
@@ -116,4 +169,4 @@ python -m unittest discover -s tests -v
 
 The first lesson uses symbolic light sensors, immediate feedback, and two turn actions. The batch runner uses the same sensor/action interface as Godot and steps the neural model directly. Its timings measure learning throughput for this task. Physics-based locomotion, natural-language teaching, and transfer between bodies belong to later experiments.
 
-Use the memory experiments to measure which abilities the first lesson produced. Before evolving for delayed feedback, reserve independent lesson sequences for evaluation and measure immediate recall alongside delayed recall. The research plan also calls for recording each offspring's parents and benchmarking throughput on the intended lab PC.
+Use the memory study to measure abilities acquired under the first lesson and the evolutionary campaign to select on delayed feedback. Both use fresh lifetimes. The research plan also calls for replication with independent founders, recording individual parentage and benchmarking throughput on the intended lab PC.

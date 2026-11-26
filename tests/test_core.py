@@ -1,13 +1,78 @@
 import json
+import hashlib
+from dataclasses import replace
 import random
 import unittest
 
 from wisp.core import Genome, Wisp, mutate, random_genome
+from wisp.experiment import identifier
 
 
 class CoreTests(unittest.TestCase):
     def setUp(self):
         self.founder = random_genome(random.Random(17))
+
+    def test_historical_zero_trace_fingerprint_and_checkpoint_bytes(self):
+        self.assertNotIn("trace_decay", self.founder.to_dict())
+        self.assertEqual(identifier(self.founder),
+                         "c2a1caf04be2ab1d81ae557297bf9962a418b86fdd4a8c0fe833235c369c7f21")
+        wisp = Wisp(self.founder, seed=9)
+        for cue, grade in ((1, None), (0, -1), (1, None), (1, None), (0, 1)):
+            wisp.choose(cue)
+            if grade:
+                wisp.feedback(grade)
+        payload = json.dumps(wisp.checkpoint(), sort_keys=True, separators=(",", ":")).encode()
+        self.assertEqual(hashlib.sha256(payload).hexdigest(),
+                         "203a49f9351cb68e232654125883ef44b9ebf69800bdcc2a3052419b13b0db60")
+
+    def test_trace_remembers_ungraded_source_then_clears_after_credit(self):
+        genome = replace(self.founder, trace_decay=.6)
+        wisp = Wisp(genome, seed=9)
+        control = Wisp(self.founder, seed=9)
+        source_motor = next(i for i, e in enumerate(genome.edges) if e.source == -1 and e.target == 0)
+        for agent in (wisp, control):
+            agent.choose(0)
+        initial_trace = wisp.checkpoint()["eligibility"][source_motor]
+        self.assertEqual(abs(initial_trace), 1)
+        for lag in range(1, 4):
+            self.assertEqual(wisp.choose(1), control.choose(1))
+            self.assertAlmostEqual(wisp.checkpoint()["eligibility"][source_motor], initial_trace * .6**lag)
+            self.assertEqual(control.checkpoint()["eligibility"][source_motor], 0)
+        before = wisp.checkpoint()
+        self.assertEqual(before["version"], 2)
+        restored = Wisp.restore(json.loads(json.dumps(before)))
+        for agent in (wisp, restored, control):
+            agent.feedback(1)
+        after = wisp.checkpoint()
+        self.assertEqual(restored.checkpoint(), after)
+        self.assertNotEqual(after["weights"][source_motor], before["weights"][source_motor])
+        self.assertEqual(control.checkpoint()["weights"][source_motor], before["weights"][source_motor])
+        self.assertEqual(set(after["eligibility"]), {0.0})
+        wisp.choose(1)
+        self.assertEqual(wisp.checkpoint()["eligibility"][source_motor], 0.0)
+        with self.assertRaises(ValueError):
+            Wisp.restore(dict(before, version=1))
+        for invalid in (-.1, 1., float("nan"), True):
+            with self.assertRaises(ValueError):
+                Genome.from_dict(dict(genome.to_dict(), trace_decay=invalid))
+
+    def test_trace_mutation_shares_the_existing_rule_mutation_budget(self):
+        observed = set()
+        for seed in range(32):
+            legacy = mutate(self.founder, random.Random(seed), rules=True, wiring=False)
+            opted = mutate(self.founder, random.Random(seed), rules=True, wiring=False, evolve_trace=True)
+            observed.add(bool(opted.trace_decay))
+            self.assertEqual(legacy.edges, opted.edges)
+            self.assertEqual(legacy.learning_rate, opted.learning_rate)
+            if opted.trace_decay:
+                self.assertEqual(opted.nodes, self.founder.nodes)
+                self.assertNotEqual(identifier(opted), identifier(self.founder))
+                self.assertEqual(Genome.from_dict(opted.to_dict()), opted)
+                fixed = mutate(opted, random.Random(seed), rules=False, wiring=True, evolve_trace=True)
+                self.assertEqual(fixed.trace_decay, opted.trace_decay)
+            else:
+                self.assertEqual(legacy, opted)
+        self.assertEqual(observed, {False, True})
 
     def test_inheritance_and_independent_mutation_switches(self):
         original = self.founder.to_dict()

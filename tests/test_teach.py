@@ -104,6 +104,32 @@ class TeachingHTTPTests(unittest.TestCase):
         self.request("/save", {})
         self.assertEqual(self.request("/lab/state"), stepped)
 
+    def test_campaign_status_is_read_only_and_uses_this_lab_save(self):
+        directory = self.path.with_name("personal.json.campaign")
+        population = self.server.lab.checkpoint()
+        self.assertEqual(self.request("/lab/campaign"), {"state": "absent"})
+        self.assertFalse(directory.exists())
+        sample = {"state": "ready", "stage_label": "One intervening choice", "generation": 5}
+        with patch("wisp.teach.read_status", return_value=sample) as reader:
+            self.assertEqual(self.request("/lab/campaign"), sample)
+            reader.assert_called_once_with(directory)
+            self.request("/lab/campaign/pause", {}, 409)
+            watch = {"phase": "comparison", "paused": False, "arms": {}}
+            with patch("wisp.campaign_watch.read_watch_status", return_value=watch), \
+                    patch("wisp.campaign_watch.set_watch_paused", return_value={**watch, "paused": True}) as toggle:
+                self.assertEqual(self.request("/lab/campaign")["supervision"], watch)
+                toggle.assert_not_called()
+                self.assertTrue(self.request("/lab/campaign/pause", {})["supervision"]["paused"])
+                toggle.assert_called_once_with(directory, True)
+                self.request("/lab/campaign/resume", {"ignored": True}, 400)
+                self.request("/lab/campaign/resume", {})
+                toggle.assert_called_with(directory, False)
+        with patch("wisp.teach.read_status", side_effect=sqlite3.DatabaseError("unreadable")):
+            self.request("/lab/campaign", expected=503)
+        self.request("/lab/campaign", {}, 404)
+        self.request("/lab/campaign/pause", {}, 404)
+        self.assertEqual(population, self.server.lab.checkpoint())
+
     def test_auto_clock_runs_without_polling_and_pauses(self):
         control = "/lab/control"
         self.request(control, {"action": "calibrate"})
@@ -209,13 +235,13 @@ class TeachingHTTPTests(unittest.TestCase):
         paused = self.request("/lab/control", {"action": "configure", "running": False})
         entered = threading.Event()
         finish = threading.Event()
-        def package_while_live(*args, snapshot_ready, memory_study):
+        def package_while_live(*args, snapshot_ready, **options):
             def drop_snapshot_lock():
                 snapshot_ready()
                 entered.set()
                 if not finish.wait(3):
                     raise TimeoutError("Live experiment did not regain its lock")
-            return export_lab(*args, snapshot_ready=drop_snapshot_lock, memory_study=memory_study)
+            return export_lab(*args, snapshot_ready=drop_snapshot_lock, **options)
         with patch("wisp.teach.export_lab", side_effect=package_while_live), ThreadPoolExecutor(1) as pool:
             export = pool.submit(self.request, "/lab/export", {})
             try:

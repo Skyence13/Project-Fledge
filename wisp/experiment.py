@@ -159,7 +159,7 @@ def score_candidate(args):
     return evaluate(Genome.from_dict(data), lessons)["summary"]["fitness"]
 
 
-def next_generation(population, scores, flags, seed, generation):
+def next_generation(population, scores, flags, seed, generation, *, evolve_trace=False):
     ranked = sorted(range(len(population)), key=lambda i: -scores[i])
     parents = ranked[:max(1, len(ranked) // 2)]
     next_pop = [population[ranked[0]]]
@@ -168,7 +168,7 @@ def next_generation(population, scores, flags, seed, generation):
         mutation_rng = random.Random(derived_seed(seed, "mutate", generation, index))
         parent = population[parent_rng.choice(parents)]
         child = mutate(Genome.from_dict(parent.to_dict()), mutation_rng,
-                       rules=flags[0], wiring=flags[1])
+                       rules=flags[0], wiring=flags[1], evolve_trace=evolve_trace)
         next_pop.append(child)
     return next_pop
 

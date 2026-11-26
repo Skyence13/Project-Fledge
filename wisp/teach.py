@@ -19,6 +19,7 @@ from uuid import uuid4
 
 from .core import Wisp, random_genome
 from .calibration import AdaptivePacer, LIVE_MAX_BATCH, LIVE_MAX_BATCH_SECONDS, LIVE_YIELD_SECONDS, calibrate
+from .campaign import read_status
 from .development import assess
 from .lab import LabController
 from .lineage import LineageArchive
@@ -129,7 +130,7 @@ class TeachingSession:
 class TeachingHandler(BaseHTTPRequestHandler):
     def log_request(self, code="-", size="-"):
         # Dashboard polls can run all day. Keep control changes and failed polls in the log.
-        if self.command == "GET" and urlsplit(self.path).path in ("/lab/state", "/lab/next-plan") and code == HTTPStatus.OK:
+        if self.command == "GET" and urlsplit(self.path).path in ("/lab/state", "/lab/next-plan", "/lab/campaign") and code == HTTPStatus.OK:
             return
         super().log_request(code, size)
 
@@ -151,6 +152,8 @@ class TeachingHandler(BaseHTTPRequestHandler):
                 state = self.server.lab_request()
             elif route.path == "/lab/next-plan" and not route.query:
                 state = self.server.next_plan_state()
+            elif route.path == "/lab/campaign" and not route.query:
+                state = self.server.campaign_state()
             elif route.path in ("/lab/branches", "/lab/history", "/lab/generation", "/lab/development"):
                 query = parse_qs(route.query, keep_blank_values=True, strict_parsing=True, max_num_fields=3)
                 if any(len(values) != 1 for values in query.values()):
@@ -170,7 +173,7 @@ class TeachingHandler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         try:
             if path not in ("/choice", "/feedback", "/save", "/load", "/lab/control", "/lab/export",
-                            "/lab/next-plan/start"):
+                            "/lab/next-plan/start", "/lab/campaign/pause", "/lab/campaign/resume"):
                 raise TeachingError(HTTPStatus.NOT_FOUND, "Unknown teaching endpoint.")
             if self.headers.get_content_type() != "application/json":
                 raise TeachingError(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "Send Content-Type: application/json.")
@@ -190,6 +193,10 @@ class TeachingHandler(BaseHTTPRequestHandler):
                 state = self.server.lab_request(data)
             elif path == "/lab/next-plan/start":
                 state = self.server.next_plan_state(data)
+            elif path in ("/lab/campaign/pause", "/lab/campaign/resume"):
+                if data:
+                    raise TeachingError(HTTPStatus.BAD_REQUEST, "Campaign controls accept an empty JSON object.")
+                state = self.server.campaign_state(pause=path.endswith("/pause"))
             elif path == "/lab/export":
                 if data:
                     raise TeachingError(HTTPStatus.BAD_REQUEST, "Export accepts an empty JSON object.")
@@ -224,6 +231,7 @@ class TeachingServer(ThreadingHTTPServer):
         self._study_thread = None
         self._last_study = None
         self._study_dir = session.save_path.with_name(session.save_path.name + ".next-plan")
+        self._campaign_dir = session.save_path.with_name(session.save_path.name + ".campaign")
         self._study = {"status": "idle", "source": None, "progress": 0., "report": None,
                        "path": None, "error": None}
         self._deadline = None
@@ -265,6 +273,28 @@ class TeachingServer(ThreadingHTTPServer):
             return LabController.restore(snapshot)
         except (AttributeError, KeyError, IndexError, TypeError, ValueError, OverflowError) as error:
             raise ValueError("This lineage checkpoint contains invalid population data.") from error
+
+    def campaign_state(self, *, pause=None):
+        from .campaign_watch import read_watch_status, set_watch_paused
+        try:
+            status = read_status(self._campaign_dir)
+        except FileNotFoundError:
+            if pause is not None:
+                raise TeachingError(HTTPStatus.NOT_FOUND, "No evolution campaign is attached to this lab.")
+            return {"state": "absent"}
+        except (OSError, ValueError, sqlite3.Error) as error:
+            raise TeachingError(HTTPStatus.SERVICE_UNAVAILABLE, "Could not read the evolution campaign.") from error
+        try:
+            watch = read_watch_status(self._campaign_dir)
+            if pause is not None:
+                if watch is None:
+                    raise TeachingError(HTTPStatus.CONFLICT, "Campaign supervision has not started.")
+                watch = set_watch_paused(self._campaign_dir, pause)
+        except TeachingError:
+            raise
+        except (OSError, ValueError, sqlite3.Error) as error:
+            raise TeachingError(HTTPStatus.SERVICE_UNAVAILABLE, "Could not access the campaign supervisor.") from error
+        return {**status, "supervision": watch} if watch is not None else status
 
     def lineage_view(self, path, query):
         with self._clock:
@@ -393,7 +423,8 @@ class TeachingServer(ThreadingHTTPServer):
                             "generation": self.lab.generation, "step": self.lab.step}
                 directory = self.session.save_path.parent / "exports"
                 package = export_lab(self.archive, self.branch_id, live_tip, personal, directory,
-                                     snapshot_ready=held.close, memory_study=self._last_study)
+                                     snapshot_ready=held.close, memory_study=self._last_study,
+                                     campaign_path=self._campaign_dir / "campaign.sqlite3")
             return {**snapshot, "filename": package.name, "path": str(package.resolve())}
         except TeachingError:
             raise
