@@ -12,6 +12,7 @@ from zipfile import ZipFile
 from wisp.core import Wisp, random_genome
 from wisp.lab import LabController
 from wisp.lineage import LineageArchive
+from wisp.next_plan import run_next_plan
 from wisp.transfer import (DATABASE, FILES, GENERATIONS, MANIFEST, PERSONAL, SUMMARY,
                            export_lab, import_lab)
 
@@ -75,6 +76,7 @@ class TransferTests(unittest.TestCase):
             self.assertEqual(float(results[0]["mean_fitness_0_to_1"]), self.original.history[-1]["mean_fitness"])
         self.assertEqual(self.archive.start({})[1]["step"], 0)  # Export never changes the source live tip.
         imported = import_lab(self.bundle, self.root / "imported")
+        self.assertFalse((imported / (PERSONAL + ".next-plan")).exists())
         personal = Wisp.restore(json.loads((imported / PERSONAL).read_bytes()))
         self.assertEqual(personal.checkpoint(), self.personal.checkpoint())
         self.assertTrue(personal.pending)
@@ -131,3 +133,31 @@ class TransferTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "schema"):
             import_lab(bad, self.root / "not-created")
         self.assertFalse((self.root / "not-created").exists())
+
+    def test_latest_memory_study_round_trip_and_path_injection_rejection(self):
+        source = {"branch_id": self.child_id, "branch_name": "Transfer test",
+                  "generation": 1, "origin_branch_id": self.branch}
+        report = run_next_plan(self.archive.snapshot(self.child_id, 1), repeats=1, member_ids=["fixed:0"])
+        record = {"source": source, "finished_at": "2026-11-26T18:15:01+00:00", "report": report}
+        bundle = export_lab(self.archive, self.child_id, self.child.checkpoint(),
+                            self.personal.checkpoint(), self.root / "exports",
+                            memory_study={**record, "path": str(self.root / "local-only.json")})
+        with ZipFile(bundle) as saved:
+            summary = json.loads(saved.read(SUMMARY))
+        self.assertEqual(summary["memory_study"], {"version": 1, **record})
+        imported = import_lab(bundle, self.root / "with-memory")
+        sidecars = list((imported / (PERSONAL + ".next-plan")).glob("study-*.json"))
+        self.assertEqual(len(sidecars), 1)
+        self.assertEqual(json.loads(sidecars[0].read_bytes()), record)
+        self.assertTrue(sidecars[0].name.startswith("study-20261126T181501000000Z-"))
+        # The reader ignores no extra fields, especially user-supplied destinations.
+        summary["memory_study"]["path"] = "../overwrite.json"
+        invalid = self.copy_package("bad-memory.zip", {SUMMARY: json.dumps(summary).encode()}, rehash=True)
+        with self.assertRaisesRegex(ValueError, "envelope"):
+            import_lab(invalid, self.root / "invalid-memory")
+        del summary["memory_study"]["path"]
+        summary["memory_study"]["report"]["manifest"]["source_path"] = "C:/private.json"
+        invalid = self.copy_package("bad-memory-source.zip", {SUMMARY: json.dumps(summary).encode()}, rehash=True)
+        with self.assertRaisesRegex(ValueError, "file reference"):
+            import_lab(invalid, self.root / "invalid-memory")
+        self.assertFalse((self.root / "invalid-memory").exists())

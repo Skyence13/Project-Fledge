@@ -1,4 +1,4 @@
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import CancelledError, ThreadPoolExecutor
 import http.client
 import json
 from pathlib import Path
@@ -209,13 +209,13 @@ class TeachingHTTPTests(unittest.TestCase):
         paused = self.request("/lab/control", {"action": "configure", "running": False})
         entered = threading.Event()
         finish = threading.Event()
-        def package_while_live(*args, snapshot_ready):
+        def package_while_live(*args, snapshot_ready, memory_study):
             def drop_snapshot_lock():
                 snapshot_ready()
                 entered.set()
                 if not finish.wait(3):
                     raise TimeoutError("Live experiment did not regain its lock")
-            return export_lab(*args, snapshot_ready=drop_snapshot_lock)
+            return export_lab(*args, snapshot_ready=drop_snapshot_lock, memory_study=memory_study)
         with patch("wisp.teach.export_lab", side_effect=package_while_live), ThreadPoolExecutor(1) as pool:
             export = pool.submit(self.request, "/lab/export", {})
             try:
@@ -267,6 +267,107 @@ class TeachingHTTPTests(unittest.TestCase):
             self.assertEqual(archive.history(active_id), history)
         finally:
             archive.close()
+
+    def finish_source_generation(self):
+        for _ in range(self.server.lab.state()["steps_per_generation"]):
+            self.server.lab_request({"action": "step"})
+
+    def wait_for_study(self):
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            state = self.request("/lab/next-plan")
+            if state["status"] != "running":
+                return state
+            time.sleep(.025)
+        self.fail("Memory evaluation did not finish")
+
+    def test_study_uses_archived_generation_while_source_lineage_advances(self):
+        start = "/lab/next-plan/start"
+        self.assertFalse(self.request("/lab/next-plan")["eligible"])
+        self.request(start, {}, 409)
+        self.request(start, {"branch": "missing"}, 400)
+        self.finish_source_generation()
+        self.request("/lab/control", {"action": "next_generation"})
+        live = self.request("/lab/control", {"action": "step"})
+        source = self.server.archive.snapshot("main", 1)
+        personal = self.server.session.wisp.checkpoint()
+        began, finish = threading.Event(), threading.Event()
+        def evaluate(snapshot, *, seed, repeats, progress, cancel_event):
+            self.assertEqual(snapshot, source)
+            self.assertEqual((seed, repeats), (41, 2))
+            progress(2, len(snapshot["members"]))
+            began.set()
+            self.assertTrue(finish.wait(3))
+            return {"protocol": "mock-memory", "genomes": len(snapshot["members"])}
+        with patch("wisp.teach.run_next_plan", side_effect=evaluate):
+            started = self.request(start, {})
+            self.assertEqual(started["status"], "running")
+            self.assertEqual(started["source"]["generation"], 1)
+            self.assertTrue(began.wait(3))
+            try:
+                self.assertGreater(self.request("/lab/next-plan")["progress"], 0.)
+                self.request(start, {}, 409)
+                self.assertEqual(self.request("/lab/state"), live)
+                self.request("/lab/control", {"action": "reset", "population": 32})
+                self.assertFalse(self.request("/lab/next-plan")["eligible"])
+            finally:
+                finish.set()
+            completed = self.wait_for_study()
+        self.assertEqual(completed["status"], "complete", completed["error"])
+        self.assertEqual(completed["source"]["branch_id"], "main")
+        data = json.loads(Path(completed["path"]).read_text(encoding="utf-8"))
+        self.assertEqual(data["report"], completed["report"])
+        self.assertEqual(self.server.session.wisp.checkpoint(), personal)
+        self.stop_server()
+        self.start_server()
+        self.assertEqual(self.request("/lab/next-plan"), completed)
+        self.request(start, {"branch": "main", "generation": 99}, 400)
+        self.assertEqual(self.request("/lab/next-plan"), completed)
+
+    def test_study_error_can_retry_and_shutdown_cancels_processing(self):
+        self.finish_source_generation()
+        before = self.server.lab.checkpoint()
+        start = "/lab/next-plan/start"
+        with patch("wisp.teach.run_next_plan", side_effect=OSError("sample failure")):
+            self.request(start, {"branch": "main", "generation": 1})
+            failed = self.wait_for_study()
+            self.assertEqual(failed["status"], "error")
+            self.assertIn("sample failure", failed["error"])
+            self.assertIsNone(failed["path"])
+        entered, cancelled = threading.Event(), threading.Event()
+        def wait_for_stop(snapshot, *, seed, repeats, progress, cancel_event):
+            entered.set()
+            if cancel_event.wait(3):
+                cancelled.set()
+                raise CancelledError()
+            raise RuntimeError("Service did not cancel this study")
+        with patch("wisp.teach.run_next_plan", side_effect=wait_for_stop):
+            self.request(start, {})
+            self.assertTrue(entered.wait(3))
+            self.assertEqual(self.server.lab.checkpoint(), before)
+            worker = self.server._study_thread
+            self.stop_server()
+            self.assertTrue(cancelled.is_set())
+            self.assertFalse(worker.is_alive())
+
+    def test_real_memory_report_exports_after_a_later_study_fails(self):
+        self.finish_source_generation()
+        self.request("/lab/control", {"action": "next_generation"})
+        untouched = self.server.lab.checkpoint()
+        self.request("/lab/next-plan/start", {})
+        completed = self.wait_for_study()
+        self.assertEqual(completed["status"], "complete", completed["error"])
+        self.assertEqual(completed["report"]["protocol"], "wisp-delay-retention-v2")
+        with patch("wisp.teach.run_next_plan", side_effect=OSError("interrupted repeat")):
+            self.request("/lab/next-plan/start", {})
+            self.assertEqual(self.wait_for_study()["status"], "error")
+        package = self.request("/lab/export", {})
+        with ZipFile(package["path"]) as bundle:
+            exported = json.loads(bundle.read("reports/summary.json"))["memory_study"]
+        self.assertEqual(exported["report"], completed["report"])
+        self.assertEqual(exported["source"], completed["source"])
+        self.assertNotIn("path", exported)
+        self.assertEqual(self.server.lab.checkpoint(), untouched)
 
     def test_archive_browsing_fork_switch_and_restart(self):
         control = "/lab/control"

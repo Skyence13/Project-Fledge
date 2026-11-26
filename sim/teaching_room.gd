@@ -4,6 +4,7 @@ const WispView = preload("res://wisp_view.gd")
 const LabPanel = preload("res://lab_panel.gd")
 const LineagePanel = preload("res://lineage_panel.gd")
 const DevelopmentPanel = preload("res://development_panel.gd")
+const NextPlanPanel = preload("res://next_plan_panel.gd")
 const LabTheme = preload("res://lab_theme.gd")
 const Address = preload("res://service_address.gd")
 const MUTED := Color("#b6c8d1")
@@ -60,6 +61,11 @@ func _ready() -> void:
 	lineages.open_report.connect(func(branch: String, generation: int):
 		tabs.current_tab = 3
 		development.show_report(branch, generation, 0))
+	var next_plan := NextPlanPanel.new()
+	next_plan.name = "MemoryExperiments"
+	tabs.add_child(next_plan)
+	tabs.set_tab_title(4, "Memory experiments")
+	development.open_memory.connect(func(): tabs.current_tab = 4)
 	var margin := MarginContainer.new()
 	personal.add_child(margin)
 	margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL

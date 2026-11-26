@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import math
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import shutil
 import sqlite3
 import stat
@@ -31,6 +31,8 @@ FILES = (PERSONAL, DATABASE, SUMMARY, GENERATIONS)
 BYTE_LIMITS = {MANIFEST: 1 << 20, PERSONAL: 1 << 20, DATABASE: 16 << 30,
                SUMMARY: 64 << 20, GENERATIONS: 4 << 30}
 PROTOCOL = "project-fledge-lab"
+MEMORY_PROTOCOL = "wisp-delay-retention-v2"
+MEMORY_LIMIT = 8 << 20
 METRIC_COLUMNS = ["branch_id", "origin_branch_id", "parent_id", "fork_generation", "generation",
                   "mean_fitness_0_to_1", "best_fitness_0_to_1", "unique_genomes",
                   "manual_overrides", "fixed_mean_0_to_1", "rules_only_mean_0_to_1",
@@ -71,18 +73,73 @@ def _read_db(path):
     return db
 
 
-def _reports(root, branch_id, live_tip):
+def _data_only(value):
+    if isinstance(value, str):
+        windows = PureWindowsPath(value)
+        if (value.startswith(("/", "\\", "file:")) or windows.drive
+                or ".." in windows.parts or "\x00" in value):
+            raise ValueError("Memory reports may contain only portable study data.")
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            if key.lower() in ("file", "filename", "directory", "path") or key.lower().endswith("_path"):
+                raise ValueError("Memory report contains a local file reference.")
+            _data_only(item)
+    elif isinstance(value, list):
+        for item in value:
+            _data_only(item)
+
+
+def _memory_payload(study, branches):
+    """Validate provenance and derive all file names locally when restoring a report."""
+    if not isinstance(study, dict) or set(study) != {"source", "finished_at", "report"}:
+        raise ValueError("Invalid memory study envelope.")
+    source = study["source"]
+    required = {"branch_id", "branch_name", "origin_branch_id", "generation"}
+    if not isinstance(source, dict) or set(source) != required:
+        raise ValueError("Invalid memory study source.")
+    report = study["report"]
+    if (not isinstance(report, dict) or report.get("protocol") != MEMORY_PROTOCOL
+            or not all(isinstance(report.get(k), dict) for k in ("source", "settings", "manifest", "baselines", "summary"))
+            or not all(isinstance(report.get(k), list) and report[k] for k in ("variants", "metrics"))
+            or report["source"].get("generation") != source["generation"]):
+        raise ValueError("Unsupported or incomplete memory study results.")
+    if len(json.dumps(study, allow_nan=False).encode("utf-8")) > MEMORY_LIMIT:
+        raise ValueError("Memory study exceeds the supported transfer size.")
+    _data_only(study)
+    branch_by_id = {row["id"]: row for row in branches}
+    origin = branch_by_id.get(source["branch_id"])
+    gen = source["generation"]
+    if (origin is None or type(gen) is not int or not 1 <= gen <= origin["completed_generation"]
+            or origin["name"] != source["branch_name"]):
+        raise ValueError("The memory study refers to an unknown lineage or generation.")
+    while origin["parent_id"] is not None and gen <= origin["fork_generation"]:
+        origin = branch_by_id[origin["parent_id"]]
+    if source["origin_branch_id"] != origin["id"]:
+        raise ValueError("The memory study and the archive disagree about the source lineage.")
+    stamp = datetime.fromisoformat(study["finished_at"])
+    if stamp.tzinfo is None:
+        raise ValueError("The memory study completion time must include a time zone.")
+    return stamp.astimezone(timezone.utc)
+
+
+def _reports(root, branch_id, live_tip, memory_study):
     (root / "reports").mkdir()
     with closing(_read_db(root / DATABASE)) as db:
         branches = [dict(r) for r in db.execute(
             "SELECT id,name,parent_id,fork_generation,completed_generation FROM branches ORDER BY rowid")]
-        _write_json(root / SUMMARY, {
+        summary = {
             "active_branch_id": branch_id, "branches": branches,
             "development": assess(LabController.restore(live_tip)),
             "generations_csv": ("One row per completed generation visible on each lineage. "
                                 "origin_branch_id identifies the lineage that evaluated it. "
                                 "Fitness columns are fractions on the 0–1 scale."),
-        })
+        }
+        if memory_study is not None:
+            # Accept a service receipt too, but deliberately copy only the data envelope.
+            record = {key: memory_study[key] for key in ("source", "finished_at", "report")}
+            _memory_payload(record, branches)
+            summary["memory_study"] = {"version": 1, **record}
+        _write_json(root / SUMMARY, summary)
         with (root / GENERATIONS).open("w", encoding="utf-8", newline="") as handle:
             writer = csv.writer(handle)
             writer.writerow(METRIC_COLUMNS)
@@ -107,7 +164,8 @@ def _reports(root, branch_id, live_tip):
                                                                    "wiring_only", "rules_and_wiring"))])
 
 
-def export_lab(archive, branch_id, live_tip, personal_checkpoint, output_dir, *, snapshot_ready=None):
+def export_lab(archive, branch_id, live_tip, personal_checkpoint, output_dir, *,
+               snapshot_ready=None, memory_study=None):
     """Capture under caller's service locks; release them after the backup via snapshot_ready."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -119,7 +177,7 @@ def export_lab(archive, branch_id, live_tip, personal_checkpoint, output_dir, *,
         archive.backup(root / DATABASE, branch_id, live_tip)
         if snapshot_ready is not None:
             snapshot_ready()
-        _reports(root, branch_id, live_tip)
+        _reports(root, branch_id, live_tip, memory_study)
         metadata = {name: _digest(root / name) for name in FILES}
         if any(info["size"] > BYTE_LIMITS[name] for name, info in metadata.items()):
             raise ValueError("The laboratory exceeds the size supported by this transfer format.")
@@ -214,10 +272,13 @@ def _validate_database(path, manifest):
 
 def _validate_reports(stage, manifest, completed):
     summary = json.loads((stage / SUMMARY).read_bytes())
+    with closing(_read_db(stage / DATABASE)) as db:
+        branches = [dict(row) for row in db.execute(
+            "SELECT id,name,parent_id,fork_generation,completed_generation FROM branches ORDER BY rowid")]
     if (summary["active_branch_id"] != manifest["active_branch_id"]
             or summary["development"]["generation"] != manifest["generation"]
             or summary["development"]["step"] != manifest["cohort_step"]
-            or {b["id"]: b["completed_generation"] for b in summary["branches"]} != completed):
+            or summary["branches"] != branches):
         raise ValueError("The readable summary does not agree with the lineage archive.")
     # Only expected identifier and numeric cells are allowed in the spreadsheet export.
     with (stage / GENERATIONS).open(encoding="utf-8", newline="") as handle:
@@ -240,6 +301,15 @@ def _validate_reports(stage, manifest, completed):
                     raise ValueError("Fitness in the generation report must be a fraction from 0 to 1.")
         if positions != completed:
             raise ValueError("The generation report is missing lineage results.")
+    if "memory_study" in summary:
+        raw = summary["memory_study"]
+        if not isinstance(raw, dict) or type(raw.get("version")) is not int or raw["version"] != 1:
+            raise ValueError("Unsupported portable memory study envelope.")
+        record = {k: v for k, v in raw.items() if k != "version"}
+        stamp = _memory_payload(record, branches)
+        reports_dir = stage / (PERSONAL + ".next-plan")
+        reports_dir.mkdir()
+        _write_json(reports_dir / f"study-{stamp:%Y%m%dT%H%M%S%fZ}-{uuid4().hex[:8]}.json", record)
 
 
 def import_lab(package_path, destination):

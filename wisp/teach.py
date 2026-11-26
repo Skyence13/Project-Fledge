@@ -3,6 +3,7 @@
 import argparse
 from concurrent.futures import CancelledError
 from contextlib import ExitStack
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -14,12 +15,14 @@ import tempfile
 import threading
 import time
 from urllib.parse import parse_qs, urlsplit
+from uuid import uuid4
 
 from .core import Wisp, random_genome
 from .calibration import AdaptivePacer, LIVE_MAX_BATCH, LIVE_MAX_BATCH_SECONDS, LIVE_YIELD_SECONDS, calibrate
 from .development import assess
 from .lab import LabController
 from .lineage import LineageArchive
+from .next_plan import run_next_plan
 from .transfer import export_lab
 
 
@@ -126,7 +129,7 @@ class TeachingSession:
 class TeachingHandler(BaseHTTPRequestHandler):
     def log_request(self, code="-", size="-"):
         # Dashboard polls can run all day. Keep control changes and failed polls in the log.
-        if self.command == "GET" and urlsplit(self.path).path == "/lab/state" and code == HTTPStatus.OK:
+        if self.command == "GET" and urlsplit(self.path).path in ("/lab/state", "/lab/next-plan") and code == HTTPStatus.OK:
             return
         super().log_request(code, size)
 
@@ -146,6 +149,8 @@ class TeachingHandler(BaseHTTPRequestHandler):
                 state = self.server.session.request(route.path)
             elif route.path == "/lab/state":
                 state = self.server.lab_request()
+            elif route.path == "/lab/next-plan" and not route.query:
+                state = self.server.next_plan_state()
             elif route.path in ("/lab/branches", "/lab/history", "/lab/generation", "/lab/development"):
                 query = parse_qs(route.query, keep_blank_values=True, strict_parsing=True, max_num_fields=3)
                 if any(len(values) != 1 for values in query.values()):
@@ -164,7 +169,8 @@ class TeachingHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = urlsplit(self.path).path
         try:
-            if path not in ("/choice", "/feedback", "/save", "/load", "/lab/control", "/lab/export"):
+            if path not in ("/choice", "/feedback", "/save", "/load", "/lab/control", "/lab/export",
+                            "/lab/next-plan/start"):
                 raise TeachingError(HTTPStatus.NOT_FOUND, "Unknown teaching endpoint.")
             if self.headers.get_content_type() != "application/json":
                 raise TeachingError(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "Send Content-Type: application/json.")
@@ -182,6 +188,8 @@ class TeachingHandler(BaseHTTPRequestHandler):
                 raise TeachingError(HTTPStatus.BAD_REQUEST, "Provide a JSON object.")
             if path == "/lab/control":
                 state = self.server.lab_request(data)
+            elif path == "/lab/next-plan/start":
+                state = self.server.next_plan_state(data)
             elif path == "/lab/export":
                 if data:
                     raise TeachingError(HTTPStatus.BAD_REQUEST, "Export accepts an empty JSON object.")
@@ -212,6 +220,12 @@ class TeachingServer(ThreadingHTTPServer):
         self._archive_error = None
         self._clock = threading.Condition()
         self._export_lock = threading.Lock()
+        self._study_cancel = threading.Event()
+        self._study_thread = None
+        self._last_study = None
+        self._study_dir = session.save_path.with_name(session.save_path.name + ".next-plan")
+        self._study = {"status": "idle", "source": None, "progress": 0., "report": None,
+                       "path": None, "error": None}
         self._deadline = None
         self._closed = False
         self._benchmark = None
@@ -236,6 +250,7 @@ class TeachingServer(ThreadingHTTPServer):
             self.branch_name = self._active_name()
             self.lab = self._restore_lab(tip)
             self.lab.running = False
+            self._read_latest_study()
             self._worker.start()
             self._benchmark_thread.start()
         except Exception:
@@ -285,6 +300,80 @@ class TeachingServer(ThreadingHTTPServer):
             self.archive.save_tip(*self._pending_tip)
             self._pending_tip = None
 
+    def _read_latest_study(self):
+        try:
+            latest = max(self._study_dir.glob("study-*.json"), default=None)
+            if latest is not None:
+                with latest.open(encoding="utf-8") as stream:
+                    data = json.load(stream)
+                if (not isinstance(data, dict) or not isinstance(data.get("source"), dict)
+                        or not isinstance(data.get("report"), dict)):
+                    raise ValueError("invalid report format")
+                self._last_study = data
+                self._study.update(status="complete", source=data["source"], report=data["report"],
+                                   progress=1., path=str(latest.resolve()))
+        except (OSError, ValueError, UnicodeError) as error:
+            self._study.update(status="error", error=f"Could not reopen the last evaluation: {error}")
+
+    def next_plan_state(self, selection=None):
+        with self._clock:
+            if self._closed:
+                raise TeachingError(HTTPStatus.SERVICE_UNAVAILABLE, "Laboratory is closing.")
+            latest = self.lab.completed - int(self._pending_record is not None)
+            if selection is not None:
+                if self._study["status"] == "running":
+                    raise TeachingError(HTTPStatus.CONFLICT, "A memory evaluation is already running.")
+                if selection.keys() - {"branch", "generation"}:
+                    raise TeachingError(HTTPStatus.BAD_REQUEST, "Choose only a lineage and generation.")
+                branch = selection.get("branch", self.branch_id)
+                try:
+                    branches = self.archive.branches()
+                    entry = next((row for row in branches if row["id"] == branch), None)
+                    if entry is None:
+                        raise ValueError("Unknown source lineage.")
+                    generation = selection.get("generation", entry["completed_generation"])
+                    if "generation" not in selection and generation == 0:
+                        raise TeachingError(HTTPStatus.CONFLICT, "Complete a generation before running the memory evaluation.")
+                    snapshot = self.archive.snapshot(branch, generation)
+                    record = self.archive.history(branch, before=generation + 1, limit=1)[0]
+                except TeachingError:
+                    raise
+                except ValueError as error:
+                    raise TeachingError(HTTPStatus.BAD_REQUEST, str(error)) from error
+                source = {"branch_id": branch, "branch_name": entry["name"], "generation": generation,
+                          "origin_branch_id": record["branch_id"]}
+                self._study = {"status": "running", "progress": 0., "source": source,
+                               "path": None, "error": None, "report": None}
+                self._study_thread = threading.Thread(target=self._evaluate_memory, args=(snapshot, source),
+                                                      name="fledge-memory-evaluation", daemon=True)
+                self._study_thread.start()
+            return {**self._study, "eligible": latest > 0, "latest_completed_generation": latest,
+                    "active_branch_id": self.branch_id, "active_branch_name": self.branch_name}
+
+    def _evaluate_memory(self, snapshot, source):
+        def progress(done, total):
+            with self._clock:
+                self._study["progress"] = done / total if total else 0.
+        try:
+            report = run_next_plan(snapshot, seed=41, repeats=2, progress=progress,
+                                   cancel_event=self._study_cancel)
+            if self._study_cancel.is_set():
+                return
+            now = datetime.now(timezone.utc)
+            filename = f"study-{now:%Y%m%dT%H%M%S%fZ}-{uuid4().hex[:8]}.json"
+            path = self._study_dir / filename
+            finished = {"source": source, "finished_at": now.isoformat(), "report": report}
+            write_checkpoint(path, finished)
+        except CancelledError:
+            return
+        except Exception as error:
+            with self._clock:
+                self._study.update(status="error", error=f"Memory evaluation failed: {error}")
+            return
+        with self._clock:
+            self._last_study = finished
+            self._study.update(status="complete", progress=1., report=report, path=str(path.resolve()))
+
     def export_run(self):
         if not self._export_lock.acquire(blocking=False):
             raise TeachingError(HTTPStatus.CONFLICT, "A run export is already in progress.")
@@ -304,7 +393,7 @@ class TeachingServer(ThreadingHTTPServer):
                             "generation": self.lab.generation, "step": self.lab.step}
                 directory = self.session.save_path.parent / "exports"
                 package = export_lab(self.archive, self.branch_id, live_tip, personal, directory,
-                                     snapshot_ready=held.close)
+                                     snapshot_ready=held.close, memory_study=self._last_study)
             return {**snapshot, "filename": package.name, "path": str(package.resolve())}
         except TeachingError:
             raise
@@ -519,11 +608,14 @@ class TeachingServer(ThreadingHTTPServer):
         with self._clock:
             self._closed = True
             self._benchmark_cancel.set()
+            self._study_cancel.set()
             self._clock.notify_all()
         if self._worker.is_alive():
             self._worker.join()
         if self._benchmark_thread.is_alive():
             self._benchmark_thread.join()
+        if self._study_thread is not None:
+            self._study_thread.join()
         # A desktop launcher may exit while a ZIP is being written by a daemon HTTP thread.
         with self._export_lock:
             pass

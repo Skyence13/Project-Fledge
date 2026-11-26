@@ -1,11 +1,14 @@
 extends ScrollContainer
 
+signal open_memory
+
 const Address = preload("res://service_address.gd")
 const Kit = preload("res://lab_theme.gd")
 
 var http := HTTPRequest.new()
 var poll := Timer.new()
 var topic := TabBar.new()
+var memory_button := Button.new()
 var copy_button := Button.new()
 var live_button := Button.new()
 var report: Dictionary = {}
@@ -81,9 +84,10 @@ func _ready() -> void:
 	protocol.add_child(lesson_steps)
 	lesson_steps.add_theme_constant_override("separation", 5)
 	var roadmap := _card(curriculum)
-	_label(roadmap, Label.new(), "Planned experiments", 19)
+	_label(roadmap, Label.new(), "Next curriculum: memory experiments", 19)
 	_label(roadmap, Label.new(), "After 128 cohort trials the lab saves the generation. Auto-advance breeds offspring for the same lesson. With auto-advance off, you can review the completed population.", 15)
-	_label(roadmap, Label.new(), "Next: delayed feedback and retention. Teach a second association, then probe the first without prompting.", 15)
+	_label(roadmap, Label.new(), "Test a completed population on two new lessons. Delay the teacher’s feedback across other choices, then measure whether learning a second cue changes recall of the first.", 15)
+	_button(roadmap, memory_button, "Open memory experiments", func(): open_memory.emit())
 	_label(roadmap, Label.new(), "Later: body adaptation. Change a simulated sensor or movement delay and test whether earlier lessons survive recalibration.", 15)
 	_label(roadmap, Label.new(), "Physical transfer follows virtual qualification. A candidate must retain a taught rule going from Godot to the bench and back.", 15, Kit.MUTED)
 	var review := _card(curriculum)

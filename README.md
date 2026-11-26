@@ -42,6 +42,21 @@ For an unattended run, choose **Automatic**, **Accelerated · adaptive**, **Auto
 
 The report is generated locally. **Copy summary** copies a plain-text snapshot you can paste into a review. An assistant session with local access can also read the loopback service's `GET /lab/development` while the lab is running. That endpoint observes the run without issuing commands. The project repository holds the implementation; experimental saves stay on the machine that runs the laboratory.
 
+### Test memory on a saved generation
+
+Open **Memory experiments** and run the latest completed generation. The lab takes each archived genome, gives a fresh Wisp a short lesson, records its unprompted responses and stops. You can leave evolution paused throughout. Auto-advance in the Evolution lab continues to select offspring on the original two-cue reversal lesson.
+
+The first memory test delivers feedback for a choice after zero, one, or three intervening choices. The second teaches one cue, teaches a second, then asks for the first again. Compare that first answer with a control that saw the second cue equally often without feedback. The results show correct responses and opportunities for the Wisps and four comparison learners. The rows for opposite cue targets require different answers for the two cues.
+
+To evaluate an earlier generation from a portable export or reproduce the founder population, use the batch command. Choose a fresh output path for each study.
+
+```sh
+python -m wisp.memory_experiment --export runs/exports/lab.zip --branch main --generation 1 --seed 41 --repeats 8 --output runs/memory-g1.json
+python -m wisp.memory_experiment --founder-seed 7 --population 16 --seed 41 --repeats 8 --output runs/memory-founders.json
+```
+
+The lab saves each completed study as JSON beside the lineage database. A portable export includes the most recent successful study and restores it in the destination lab. To transfer additional studies, copy their JSON files separately.
+
 ### Inspect history or start a branch
 
 Open **Lineages**, select a lineage, then a saved generation. You can inspect its final population and fitness while the active population continues. Give the new lineage a name and choose **Branch from here**. Branching from generation 5 opens generation 6 with fresh offspring. The new lineage inherits the selected parents and its own reproducible mutation stream. The lesson schedule remains matched for comparison.
@@ -101,4 +116,4 @@ python -m unittest discover -s tests -v
 
 The first lesson uses symbolic light sensors, immediate feedback, and two turn actions. The batch runner uses the same sensor/action interface as Godot and steps the neural model directly. Its timings measure learning throughput for this task. Physics-based locomotion, natural-language teaching, and transfer between bodies belong to later experiments.
 
-The next question is whether a Wisp can retain an association through an intervening task and still assign feedback to an earlier choice. The research plan also calls for recording each offspring's parents and benchmarking throughput on the intended lab PC.
+Use the memory experiments to measure which abilities the first lesson produced. Before evolving for delayed feedback, reserve independent lesson sequences for evaluation and measure immediate recall alongside delayed recall. The research plan also calls for recording each offspring's parents and benchmarking throughput on the intended lab PC.
