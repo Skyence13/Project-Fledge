@@ -28,10 +28,19 @@ Each Wisp experiences baseline probes, teaching, recall, a rule reversal, reteac
 | --- | --- |
 | Manual | **Step lesson** advances one cue for every Wisp. During teaching, **Teach left** or **Teach right** grades the choices against the direction you select. |
 | Automatic | **Start** delivers the scheduled lessons and grades responses. **Pause** holds the current trial position. |
-| Real time / Accelerated | Sets the automatic clock to 1 or 16 cohort trials per second. Both speeds use the same cues, neural updates and feedback. Manual trials advance on a click. |
+| Computer speed check | Benchmarks a disposable copy of this population on the host. One cohort trial gives every Wisp one choice. The measured rate, recommended ceiling, current target, and achieved pace have different meanings. |
+| Real time / Accelerated | Real time advances one cohort trial per second. Adaptive acceleration uses calibrated capacity. The pace menu also offers fixed targets up to the measured ceiling. Both modes use the same cues, neural updates and feedback. Manual trials advance on a click. |
 | Auto-advance generations | When enabled with automatic training running, the lab selects parents and breeds the next population at each boundary. When disabled it holds the completed cohort for inspection. **Next generation** breeds one generation on demand. |
 
-For an unattended run, choose **Automatic**, **Accelerated**, **Auto-advance generations**, then **Start**. The server keeps advancing when you view another tab. Keep the laboratory process running and the computer awake.
+For an unattended run, choose **Automatic**, **Accelerated · adaptive**, **Auto-advance generations**, then **Start**. Acceleration triggers a speed check if this population needs one. The clock accounts for measured work as it runs and repeats the check after a material change in network complexity. The server keeps advancing when you view another tab. Keep the laboratory process running and the computer awake.
+
+**New founder population** gives you 16, 32, or 64 Wisps (4, 8, or 16 candidates per experimental condition). The previous population stays in **Lineages**. More candidates explore more variants each generation and cost more choices per trial. To compare under the same budget, try 16 Wisps for 16 generations, 32 for 8, and 64 for 4. Each evaluates 256 candidates. Repeat with multiple seeds and compare the trained populations on held-out lessons. The batch runner's `--population` counts candidates per condition.
+
+### View the learning plan and developmental evidence
+
+**View full learning plan** opens the six stages of the current two-cue protocol, their trial budgets, and the planned experiments. **Generation summary** opens the observations from the current population. It shows baseline responses, immediate recall, first responses to the reversed rule, and recall after reteaching. Read the counts beside the percentages. Pending probes and observations unavailable in older archives are labelled. Under **Lineages**, select a completed generation and click **Generation summary** for its historical evidence.
+
+The report is generated locally. **Copy summary** copies a plain-text snapshot you can paste into a review. An assistant session with local access can also read the loopback service's `GET /lab/development` while the lab is running. That endpoint observes the run without issuing commands. The project repository holds the implementation; experimental saves stay on the machine that runs the laboratory.
 
 ### Inspect history or start a branch
 

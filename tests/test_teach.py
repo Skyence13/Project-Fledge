@@ -103,9 +103,12 @@ class TeachingHTTPTests(unittest.TestCase):
 
     def test_auto_clock_runs_without_polling_and_pauses(self):
         control = "/lab/control"
+        self.request(control, {"action": "calibrate"})
+        calibrated = self.wait_for_calibration()
         running = self.request(control, {"action": "configure", "mode": "auto",
-                                         "speed": "accelerated", "running": True})
+                                         "speed": "accelerated", "running": True, "rate": 8})
         self.assertEqual(running["speed"], "accelerated")
+        self.assertEqual(running["pacing"]["target_trials_per_second"], min(8, calibrated["cap"]))
         # Wait for the clock itself; HTTP reads must never drive ticks.
         event = threading.Event()
         original_tick = self.server.lab.tick
@@ -125,6 +128,71 @@ class TeachingHTTPTests(unittest.TestCase):
         self.stop_server()
         self.assertFalse(worker.is_alive())
 
+    def wait_for_calibration(self):
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            pacing = self.request("/lab/state")["pacing"]
+            if pacing["status"] != "measuring":
+                self.assertEqual(pacing["status"], "ready", pacing)
+                return pacing
+            time.sleep(.05)
+        self.fail("Hardware calibration did not finish")
+
+    def test_hardware_benchmark_and_population_reset_preserve_experiment(self):
+        control = "/lab/control"
+        original = self.server.lab.checkpoint()
+        personal = self.server.session.wisp.checkpoint()
+        state = self.request(control, {"action": "calibrate"})
+        self.assertEqual(state["pacing"]["status"], "measuring")
+        measured = self.wait_for_calibration()
+        self.assertGreater(measured["measured_trials_per_second"], 0)
+        self.assertEqual(measured["presets"][0], 1)
+        self.assertEqual(measured["presets"][-1], measured["cap"])
+        self.assertEqual(self.server.lab.checkpoint(), original)
+        self.assertEqual(self.server.session.wisp.checkpoint(), personal)
+        self.assertEqual(self.request("/lab/history")["generations"], [])
+        clipped = self.request(control, {"action": "configure", "rate": 65536, "speed": "accelerated"})
+        self.assertEqual(clipped["pacing"]["effective_trials_per_second"], measured["cap"])
+        with self.server._clock:
+            self.server._pacer.observe(32, 32., measured["cap"])
+        limited = self.request("/lab/state")["pacing"]
+        self.assertLessEqual(max(limited["presets"]), limited["live_cap"])
+        self.assertEqual(limited["effective_trials_per_second"], limited["live_cap"])
+        self.assertEqual(limited["requested_rate"], 65536)
+        for value in (True, 0, -1, "16", 65537):
+            self.request(control, {"action": "configure", "rate": value}, 400)
+        self.assertEqual(self.request(control, {"action": "configure", "speed": "realtime"})["pacing"]
+                         ["effective_trials_per_second"], 1)
+        for size in (8, 63, 1024, None, True):
+            self.request(control, {"action": "reset", "population": size}, 400)
+        reset = self.request(control, {"action": "reset", "population": 64})
+        self.assertEqual(reset["population"], 64)
+        self.assertEqual(reset["pacing"]["status"], "uncalibrated")
+        self.assertEqual(reset["pacing"]["cap"], None)
+        source = self.request(control, {"action": "switch", "branch": "main"})
+        self.assertEqual(source["population"], 16)
+        self.assertEqual(source["pacing"]["requested_rate"], 65536)
+
+    def test_switch_discards_an_inflight_probe_and_no_clock_threads_survive_close(self):
+        started = threading.Event()
+        cancelled = threading.Event()
+        def stale_probe(checkpoint, *, cancel_event, archive_dir):
+            self.assertEqual(archive_dir, self.path.parent)
+            started.set()
+            self.assertTrue(cancel_event.wait(3))
+            cancelled.set()
+            return {"cap": 9999, "presets": [1, 9999], "measured_trials_per_second": 10000}
+        with patch("wisp.teach.calibrate", side_effect=stale_probe):
+            self.request("/lab/control", {"action": "calibrate"})
+            self.assertTrue(started.wait(3))
+            self.request("/lab/control", {"action": "reset", "population": 32})
+            self.assertTrue(cancelled.wait(3))
+        state = self.request("/lab/state")
+        self.assertEqual((state["population"], state["pacing"]["cap"]), (32, None))
+        benchmark_thread = self.server._benchmark_thread
+        self.stop_server()
+        self.assertFalse(benchmark_thread.is_alive())
+
     def test_archive_browsing_fork_switch_and_restart(self):
         control = "/lab/control"
         self.request("/choice", {"cue": 1})
@@ -139,9 +207,14 @@ class TeachingHTTPTests(unittest.TestCase):
         self.assertEqual([row["generation"] for row in history["generations"]], [1])
         old = self.request("/lab/generation?branch=main&generation=1")
         self.assertEqual(old["state"]["variants"], final["variants"])
+        development = self.request("/lab/development?branch=main&generation=1")
+        self.assertEqual(development, self.request("/lab/development"))
+        self.assertEqual(development["branch_name"], final["active_branch_name"])
         self.request(control, {"action": "next_generation"})
         live = self.request(control, {"action": "step"})
         self.assertEqual(self.request("/lab/generation?branch=main&generation=1"), old)
+        self.assertNotEqual(self.request("/lab/development"), development)
+        self.assertEqual(self.request("/lab/development?branch=main&generation=1"), development)
         self.assertEqual(self.request("/lab/state"), live)
 
         child = self.request(control, {"action": "branch", "branch": "main", "generation": 1, "name": "Compare memory"})

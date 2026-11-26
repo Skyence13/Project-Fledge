@@ -138,6 +138,21 @@ class LabTests(unittest.TestCase):
         configure(lab, mode="manual")
         self.assertFalse(lab.running)
 
+    def test_preferred_rate_configuration_checkpoint_and_legacy_default(self):
+        lab = LabController(per_condition=2)
+        configure(lab, rate=37)
+        self.assertEqual(lab.state()["preferred_rate"], 37)
+        self.assertEqual(LabController.restore(lab.checkpoint()).preferred_rate, 37)
+        for invalid in (False, 0, -1, 100000, 1.5, "20"):
+            with self.assertRaises(ValueError):
+                configure(lab, rate=invalid)
+            self.assertEqual(lab.preferred_rate, 37)
+        old = lab.checkpoint()
+        del old["preferred_rate"]
+        self.assertIsNone(LabController.restore(old).preferred_rate)
+        configure(lab, rate=None)
+        self.assertIsNone(lab.preferred_rate)
+
 
 if __name__ == "__main__":
     unittest.main()

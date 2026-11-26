@@ -1,6 +1,7 @@
 """Loopback HTTP service for the teaching room and the live evolution experiment."""
 
 import argparse
+from concurrent.futures import CancelledError
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -14,12 +15,14 @@ import time
 from urllib.parse import parse_qs, urlsplit
 
 from .core import Wisp, random_genome
+from .calibration import AdaptivePacer, LIVE_MAX_BATCH, LIVE_MAX_BATCH_SECONDS, LIVE_YIELD_SECONDS, calibrate
+from .development import assess
 from .lab import LabController
 from .lineage import LineageArchive
 
 
 MAX_REQUEST_BYTES = 4096
-TRIALS_PER_SECOND = {"realtime": 1, "accelerated": 16}
+CLOCK_QUANTUM = .025
 
 
 class TeachingError(ValueError):
@@ -141,7 +144,7 @@ class TeachingHandler(BaseHTTPRequestHandler):
                 state = self.server.session.request(route.path)
             elif route.path == "/lab/state":
                 state = self.server.lab_request()
-            elif route.path in ("/lab/branches", "/lab/history", "/lab/generation"):
+            elif route.path in ("/lab/branches", "/lab/history", "/lab/generation", "/lab/development"):
                 query = parse_qs(route.query, keep_blank_values=True, strict_parsing=True, max_num_fields=3)
                 if any(len(values) != 1 for values in query.values()):
                     raise ValueError("Use each query parameter once.")
@@ -204,6 +207,18 @@ class TeachingServer(ThreadingHTTPServer):
         self._clock = threading.Condition()
         self._deadline = None
         self._closed = False
+        self._benchmark = None
+        self._benchmark_cancel = threading.Event()
+        self._benchmark_requested = False
+        self._benchmark_thread = threading.Thread(target=self._benchmark_loop, name="fledge-calibration", daemon=True)
+        self._bench_status = "uncalibrated"
+        self._bench_error = None
+        self._bench_work = 0
+        self._bench_time = None
+        self._pacer = None
+        self._achieved = None
+        self._meter_started = None
+        self._meter_trials = 0
         self._worker = threading.Thread(target=self._run_lab, name="fledge-lab", daemon=True)
         super().__init__(("127.0.0.1", port), TeachingHandler)
         try:
@@ -215,6 +230,7 @@ class TeachingServer(ThreadingHTTPServer):
             self.lab = self._restore_lab(tip)
             self.lab.running = False
             self._worker.start()
+            self._benchmark_thread.start()
         except Exception:
             if self.archive is not None:
                 self.archive.close()
@@ -235,6 +251,12 @@ class TeachingServer(ThreadingHTTPServer):
             if path == "/lab/branches" and not query:
                 return {"active_branch_id": self.branch_id, "branches": self.archive.branches()}
             branch = query.get("branch", self.branch_id)
+            if path == "/lab/development" and not query:
+                return {**assess(self.lab), "branch_id": self.branch_id, "branch_name": self.branch_name}
+            if path == "/lab/development" and "generation" in query and query.keys() <= {"branch", "generation"}:
+                historical = self._restore_lab(self.archive.snapshot(branch, int(query["generation"])))
+                name = next(row["name"] for row in self.archive.branches() if row["id"] == branch)
+                return {**assess(historical), "branch_id": branch, "branch_name": name}
             if path == "/lab/history" and query.keys() <= {"branch", "before", "limit"}:
                 before = int(query["before"]) if "before" in query else None
                 rows = self.archive.history(branch, before=before, limit=int(query.get("limit", 20)))
@@ -272,8 +294,11 @@ class TeachingServer(ThreadingHTTPServer):
                                             source_tip, make_tip)
         elif command["action"] == "switch" and set(command) == {"action", "branch"}:
             branch, tip = self.archive.switch(command["branch"], source_tip, validate_tip=self._restore_lab)
-        elif command == {"action": "reset"}:
-            fresh = LabController(seed=self.seed).checkpoint()
+        elif command["action"] == "reset" and command.keys() <= {"action", "population"}:
+            population = command.get("population", len(self.lab.members))
+            if type(population) is not int or population not in (16, 32, 64):
+                raise ValueError("Choose a founder population of 16, 32, or 64.")
+            fresh = LabController(seed=self.seed, per_condition=population // 4).checkpoint()
             branch, tip = self.archive.new_run(fresh, source_tip)
         else:
             raise ValueError("Invalid lineage command parameters.")
@@ -281,23 +306,98 @@ class TeachingServer(ThreadingHTTPServer):
         self.lab.running = False
         self.branch_id = branch
         self.branch_name = self._active_name()
+        self._benchmark_cancel.set()
+        self._benchmark_requested = False
+        self._benchmark = self._pacer = self._bench_error = self._bench_time = None
+        self._bench_status = "uncalibrated"
+        self._reset_meter()
 
     def _active_name(self):
         return next(branch["name"] for branch in self.archive.branches() if branch["id"] == self.branch_id)
+
+    def _reset_meter(self):
+        self._achieved = None
+        self._meter_trials = 0
+        self._meter_started = time.monotonic() if self.lab.running else None
+
+    def _work_size(self):
+        return sum(len(m.genome.nodes) + len(m.genome.edges) for m in self.lab.members)
+
+    def _queue_benchmark(self):
+        if self._bench_status != "measuring":
+            self._bench_status = "measuring"
+            self._bench_error = None
+            self._benchmark_requested = True
+            self._clock.notify_all()
+
+    def _benchmark_loop(self):
+        # Only one probe exists per service. Its random state and weights belong to a detached copy.
+        while True:
+            with self._clock:
+                self._clock.wait_for(lambda: self._closed or self._benchmark_requested)
+                if self._closed:
+                    return
+                self._benchmark_requested = False
+                self._benchmark_cancel = cancel = threading.Event()
+                snapshot = self.lab.checkpoint()
+                work = self._work_size()
+            try:
+                result = calibrate(snapshot, cancel_event=cancel, archive_dir=self.session.save_path.parent)
+                pacer = AdaptivePacer(result["cap"])
+            except CancelledError:
+                continue
+            except Exception as error:
+                with self._clock:
+                    if not cancel.is_set():
+                        self._bench_status = "error"
+                        self._bench_error = f"Calibration failed: {error}"
+                        self._clock.notify_all()
+                continue
+            with self._clock:
+                if not cancel.is_set():
+                    self._benchmark, self._pacer = result, pacer
+                    self._bench_work, self._bench_time = work, time.monotonic()
+                    self._bench_status = "ready"
+                    if self.lab.speed == "accelerated":
+                        self._deadline = None
+                    self._clock.notify_all()
+
+    def _rates(self):
+        if self.lab.speed == "realtime" or self._pacer is None:
+            return 1, 1
+        target = min(self.lab.preferred_rate or self._pacer.cap, self._pacer.cap)
+        return target, self._pacer.effective_rate(target)
+
+    def _pacing_state(self):
+        result = self._benchmark or {}
+        target, effective = self._rates()
+        live_cap = self._pacer.capacity if self._pacer is not None else None
+        choices = [rate for rate in result.get("presets", [1]) if live_cap is None or rate <= live_cap]
+        return {**result, "status": self._bench_status, "error": self._bench_error,
+                "presets": choices, "cap": result.get("cap"), "live_cap": live_cap,
+                "measured_trials_per_second": result.get("measured_trials_per_second"),
+                "target_trials_per_second": target, "effective_trials_per_second": effective,
+                "requested_rate": self.lab.preferred_rate, "achieved_trials_per_second": self._achieved,
+                "population": len(self.lab.members)}
 
     def lab_request(self, command=None):
         with self._clock:
             if self._closed:
                 raise TeachingError(HTTPStatus.SERVICE_UNAVAILABLE, "Laboratory is closing.")
             if command is not None:
-                previous = (self.lab.running, self.lab.speed)
+                previous = (self.lab.running, self.lab.speed, self.lab.preferred_rate)
                 completed = self.lab.completed
                 try:
                     self._flush_writes()
                     if command.get("action") in ("branch", "switch", "reset"):
                         self._change_branch(command)
+                    elif command == {"action": "calibrate"}:
+                        self._queue_benchmark()
                     else:
                         self.lab.command(command)
+                        if (self.lab.speed == "accelerated" and self._bench_status == "uncalibrated"
+                                and command.get("action") == "configure"):
+                            self._queue_benchmark()
                         self._archive_completion(completed)
                         if previous[0] and not self.lab.running:
                             self._pending_tip = (self.branch_id, self.lab.checkpoint())
@@ -309,11 +409,13 @@ class TeachingServer(ThreadingHTTPServer):
                     self.lab.running = False
                     self._archive_error = "Lineage write failed. Check archive access and free disk space."
                     raise TeachingError(HTTPStatus.SERVICE_UNAVAILABLE, self._archive_error) from error
-                if previous != (self.lab.running, self.lab.speed):
+                if previous != (self.lab.running, self.lab.speed, self.lab.preferred_rate):
                     self._deadline = None
-                    self._clock.notify()
+                    self._reset_meter()
+                    self._clock.notify_all()
             return {**self.lab.state(), "active_branch_id": self.branch_id,
-                    "active_branch_name": self.branch_name, "archive_error": self._archive_error}
+                    "active_branch_name": self.branch_name, "archive_error": self._archive_error,
+                    "pacing": self._pacing_state()}
 
     def _run_lab(self):
         with self._clock:
@@ -322,30 +424,71 @@ class TeachingServer(ThreadingHTTPServer):
                     self._deadline = None
                     self._clock.wait()
                     continue
-                interval = 1 / TRIALS_PER_SECOND[self.lab.speed]
+                target, effective = self._rates()
+                interval = 1 / effective
+                batch = min(LIVE_MAX_BATCH, max(1, round(effective * CLOCK_QUANTUM)))
+                period = batch * interval
                 now = time.monotonic()
                 if self._deadline is None:
-                    self._deadline = now + interval
+                    self._deadline = now + period
                 remaining = self._deadline - now
                 if remaining > 0:
                     self._clock.wait(remaining)
                     continue
-                completed = self.lab.completed
-                self.lab.tick()
+                processed = 0
                 try:
-                    self._archive_completion(completed)
+                    for _ in range(batch):
+                        completed = self.lab.completed
+                        self.lab.tick()
+                        processed += 1
+                        if self.lab.completed != completed:
+                            self._archive_completion(completed)
+                            self._check_complexity()
+                        if not self.lab.running or time.monotonic() - now >= LIVE_MAX_BATCH_SECONDS:
+                            break
                 except (sqlite3.Error, OSError):
                     self.lab.running = False
                     self._archive_error = "Lineage write failed. Check archive access and free disk space."
-                # Drop missed deadlines after host suspension; never replay a burst.
-                self._deadline = time.monotonic() + interval
+                end = time.monotonic()
+                if self.lab.speed == "accelerated" and self._pacer is not None and processed:
+                    # Recover normal timer jitter with the next deadline. Only excess lateness
+                    # beyond one batch is unrecoverable and counts against capacity.
+                    self._pacer.observe(processed, max(end - now, 1e-9), target,
+                                        overrun_seconds=max(now - self._deadline - period, 0.0))
+                if self.lab.running:
+                    if self._meter_started is None:
+                        self._meter_started = now
+                    self._meter_trials += processed
+                    elapsed = end - self._meter_started
+                    if elapsed >= .75:
+                        self._achieved = round(self._meter_trials / elapsed, 2)
+                        self._meter_started, self._meter_trials = end, 0
+                else:
+                    self._reset_meter()
+                # Preserve cadence across short late wakeups, but discard a backlog after a
+                # long host suspension. Always release the condition between bounded batches.
+                if now - self._deadline > period:
+                    self._deadline = now
+                next_due = self._deadline + processed * interval
+                self._deadline = max(next_due, end + LIVE_YIELD_SECONDS)
+
+    def _check_complexity(self):
+        if self._bench_status != "ready" or self.lab.speed != "accelerated":
+            return
+        since_measurement = time.monotonic() - self._bench_time
+        relative_change = abs(self._work_size() - self._bench_work) / max(1, self._bench_work)
+        if since_measurement >= 15 and relative_change >= .20:
+            self._queue_benchmark()
 
     def server_close(self):
         with self._clock:
             self._closed = True
-            self._clock.notify()
+            self._benchmark_cancel.set()
+            self._clock.notify_all()
         if self._worker.is_alive():
             self._worker.join()
+        if self._benchmark_thread.is_alive():
+            self._benchmark_thread.join()
         try:
             if self.archive is not None:
                 try:

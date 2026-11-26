@@ -1,5 +1,7 @@
 extends VBoxContainer
 
+signal open_development(index: int)
+
 const Address = preload("res://service_address.gd")
 const HistoryPlot = preload("res://lab_history.gd")
 const MINT := Color("#95e5d5")
@@ -28,6 +30,15 @@ var queued_commands: Array[Dictionary] = []
 var syncing := false
 var training_mode := OptionButton.new()
 var pace_mode := OptionButton.new()
+var speed_check_button := Button.new()
+var calibrate_button := Button.new()
+var speed_dialog := AcceptDialog.new()
+var speed_results := Label.new()
+var pacing_status := Label.new()
+var pace_rates: Array[int] = []
+var plan_button := Button.new()
+var summary_button := Button.new()
+var population_size := OptionButton.new()
 var run_button := Button.new()
 var step_button := Button.new()
 var left_button := Button.new()
@@ -56,6 +67,7 @@ var selected_name := Label.new()
 var history_caption := Label.new()
 var history_plot := HistoryPlot.new()
 var comparison := BoxContainer.new()
+var header := BoxContainer.new()
 
 func _ready() -> void:
 	var scroll := ScrollContainer.new()
@@ -73,7 +85,6 @@ func _ready() -> void:
 	main.add_theme_constant_override("separation", 9)
 	outer.add_child(main)
 
-	var header := HBoxContainer.new()
 	main.add_child(header)
 	_label(header, headline, "Evolution laboratory", 24)
 	headline.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -90,18 +101,25 @@ func _ready() -> void:
 	_options(tools, training_mode, ["Manual", "Automatic"])
 	training_mode.item_selected.connect(func(i): _configure({"mode": "manual" if i == 0 else "auto"}))
 	_label(tools, Label.new(), "Pace", 14, MUTED)
-	_options(tools, pace_mode, ["Real time · 1×", "Accelerated · 16×"])
-	pace_mode.tooltip_text = "Automatic training targets 1 or 16 cohort trials per second. Manual training advances when you press a trial button."
-	pace_mode.item_selected.connect(func(i): _configure({"speed": "realtime" if i == 0 else "accelerated"}))
+	_options(tools, pace_mode, ["Real time · 1/s", "Accelerated · adaptive"])
+	pace_mode.tooltip_text = "Automatic training advances the entire cohort each trial. Adaptive pace uses this computer's measured capacity. Manual training advances one trial per click."
+	pace_mode.item_selected.connect(_set_pace)
 	_button(tools, run_button, "Start", func(): _configure({"running": not bool(snapshot.get("running", false))}))
 	auto_advance.text = "Auto-advance generations"
 	auto_advance.tooltip_text = "Breed the next generation automatically after all lessons. Switch off to inspect each final cohort."
 	tools.add_child(auto_advance)
 	auto_advance.toggled.connect(func(on): _configure({"auto_advance": on}))
 	_button(tools, next_button, "Next generation", func(): _command({"action": "next_generation"}))
+	var speed_row := _flow(main)
+	_button(speed_row, speed_check_button, "Computer speed check", func(): _open_settings(speed_dialog))
+	_label(speed_row, pacing_status, "Waiting for pace measurements.", 14, MUTED)
+	_setup_speed_dialog()
 
 	var lesson := _card(main)
-	_label(lesson, Label.new(), "Learning plan", 18)
+	var lesson_head := _flow(lesson)
+	_label(lesson_head, Label.new(), "Current lesson", 18)
+	_button(lesson_head, plan_button, "View full learning plan", func(): open_development.emit(1))
+	plan_button.add_theme_color_override("font_color", MINT)
 	lesson.add_child(stage_flow)
 	stage_flow.add_theme_constant_override("h_separation", 9)
 	stage_flow.add_theme_constant_override("v_separation", 4)
@@ -127,7 +145,10 @@ func _ready() -> void:
 	var population := _card(comparison)
 	population.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	population.get_parent().size_flags_stretch_ratio = 1.65
-	_label(population, Label.new(), "Current generation", 18)
+	var cohort_head := _flow(population)
+	_label(cohort_head, Label.new(), "Current generation", 18)
+	_button(cohort_head, summary_button, "Generation summary", func(): open_development.emit(0))
+	summary_button.add_theme_color_override("font_color", MINT)
 	_setup_tree(population)
 	var inspector := _card(comparison)
 	inspector.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -141,11 +162,18 @@ func _ready() -> void:
 	inspector.add_child(history_plot)
 	history_plot.custom_minimum_size = Vector2(0, 49)
 	var footer := _flow(main)
-	_button(footer, reset_button, "New founder population", reset_dialog.popup_centered)
+	_button(footer, reset_button, "New founder population", func(): _open_settings(reset_dialog))
 	reset_dialog.title = "Start a new founder population?"
-	reset_dialog.dialog_text = "A new independent lineage will start from the original seed. You can reopen this population in Lineages."
+	var reset_content := _dialog_content(reset_dialog)
+	var reset_hint := Label.new()
+	_label(reset_content, reset_hint, "Start a new independent lineage from the original seed. You can reopen the previous population in Lineages.", 15)
+	reset_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_label(reset_content, Label.new(), "Founder population", 14, MUTED)
+	_options(reset_content, population_size, ["16 Wisps · 4 per condition", "32 Wisps · 8 per condition", "64 Wisps · 16 per condition"])
+	for i in 3:
+		population_size.set_item_metadata(i, 16 << i)
 	reset_dialog.ok_button_text = "Start new lineage"
-	reset_dialog.confirmed.connect(func(): _command({"action": "reset"}))
+	reset_dialog.confirmed.connect(func(): _command({"action": "reset", "population": population_size.get_selected_metadata()}))
 	add_child(reset_dialog)
 	resized.connect(_resize_layout)
 	_resize_layout()
@@ -162,6 +190,105 @@ func _ready() -> void:
 
 func _resize_layout() -> void:
 	comparison.vertical = size.x < 715
+	header.vertical = size.x < 725
+
+func _open_settings(dialog: AcceptDialog) -> void:
+	var width := clampi(int(get_viewport_rect().size.x) - 56, 220, 470)
+	dialog.popup_centered(Vector2i(width, 264))
+
+func _dialog_content(dialog: AcceptDialog) -> VBoxContainer:
+	var scroll := ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.custom_minimum_size = Vector2(180, 135)
+	dialog.add_child(scroll)
+	var column := VBoxContainer.new()
+	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	column.add_theme_constant_override("separation", 9)
+	scroll.add_child(column)
+	return column
+
+func _setup_speed_dialog() -> void:
+	speed_dialog.title = "Computer speed check"
+	speed_dialog.ok_button_text = "Close"
+	var column := _dialog_content(speed_dialog)
+	var explanation := Label.new()
+	_label(column, explanation, "Measure how many trials per second this computer can sustain for the current population. Each trial advances every Wisp once.", 15)
+	explanation.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_label(column, speed_results, "", 15, MINT)
+	speed_results.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_button(column, calibrate_button, "Run speed check", func(): _command({"action": "calibrate"}))
+	add_child(speed_dialog)
+
+func _set_pace(index: int) -> void:
+	if index == 0:
+		_configure({"speed": "realtime"})
+	else:
+		_configure({"speed": "accelerated", "rate": pace_mode.get_item_metadata(index)})
+
+func _render_pacing() -> void:
+	var pace: Dictionary = snapshot.get("pacing", {})
+	var requested = pace.get("requested_rate")
+	var live_cap = pace.get("live_cap")
+	var rates: Array[int] = []
+	for value in pace.get("presets", []):
+		if int(value) > 1 and not rates.has(int(value)):
+			rates.append(int(value))
+	if requested != null and not rates.has(int(requested)):
+		rates.append(int(requested))
+	rates.sort()
+	# Polling must not rebuild a PopupMenu while the operator is choosing a rate.
+	if not pace_mode.get_popup().visible:
+		if rates != pace_rates:
+			while pace_mode.item_count > 2:
+				pace_mode.remove_item(pace_mode.item_count - 1)
+			for rate in rates:
+				pace_mode.add_item("Accelerated · %d/s" % rate)
+				pace_mode.set_item_metadata(pace_mode.item_count - 1, rate)
+			pace_rates = rates
+		for i in rates.size():
+			var rate := rates[i]
+			var limited := live_cap != null and rate > int(live_cap)
+			var index := i + 2
+			var text := "Requested %d/s (limited)" % rate if limited else "Accelerated · %d/s" % rate
+			if pace_mode.get_item_text(index) != text:
+				pace_mode.set_item_text(index, text)
+			pace_mode.set_item_disabled(index, limited)
+		var selected := 0
+		if snapshot.speed == "accelerated":
+			selected = 1 if requested == null else 2 + rates.find(int(requested))
+		pace_mode.select(selected)
+	var measured = pace.get("measured_trials_per_second")
+	var cap = pace.get("cap")
+	var achieved = pace.get("achieved_trials_per_second")
+	var measuring: bool = pace.get("status") == "measuring"
+	var effective = pace.get("effective_trials_per_second", 1)
+	var pace_summary := "Effective target %d/s" % int(effective)
+	if achieved != null:
+		pace_summary += "  ·  Achieved %.1f/s" % float(achieved)
+	if measuring:
+		pace_summary += "  ·  Measuring capacity…"
+	elif live_cap != null:
+		pace_summary += "  ·  Live limit %d/s" % int(live_cap)
+	elif cap != null:
+		pace_summary += "  ·  Benchmark limit %d/s" % int(cap)
+	elif pace.get("status") == "error":
+		pace_summary += "  ·  Check failed"
+	else:
+		pace_summary += "  ·  Capacity unmeasured"
+	pacing_status.text = pace_summary
+	pacing_status.tooltip_text = "All rates are cohort trials per second. Automatic training records the achieved rate while running."
+	if measuring:
+		speed_results.text = "Measuring this computer with %d Wisps…" % int(pace.get("population", snapshot.population))
+	elif pace.get("status") == "error":
+		speed_results.text = "Speed check failed. " + str(pace.get("error", "Run the check again."))
+	elif cap != null and measured != null:
+		speed_results.text = "%d Wisps  ·  Measured %.1f cohort trials/s\nBenchmark limit %d cohort trials/s" % [
+			int(pace.get("population", snapshot.population)), float(measured), int(cap)]
+		if live_cap != null:
+			speed_results.text += "\nLive limit %d cohort trials/s at the current load" % int(live_cap)
+	else:
+		speed_results.text = "This population has no speed measurement yet."
+	calibrate_button.text = "Measuring…" if measuring else "Run speed check"
 
 func _box(fill: Color, border: Color, radius: int) -> StyleBoxFlat:
 	var box := StyleBoxFlat.new()
@@ -301,6 +428,8 @@ func _update_controls() -> void:
 	var teaching: bool = snapshot.get("teaching", false)
 	training_mode.disabled = locked
 	pace_mode.disabled = locked
+	speed_check_button.disabled = not connected_to_lab
+	calibrate_button.disabled = locked or snapshot.get("pacing", {}).get("status") == "measuring"
 	auto_advance.disabled = locked
 	run_button.disabled = locked or manual or (waiting and not auto_advance.button_pressed and not bool(snapshot.get("running", false)))
 	run_button.text = "Pause" if bool(snapshot.get("running", false)) else "Start"
@@ -326,7 +455,7 @@ func _cue(value) -> String:
 func _render() -> void:
 	syncing = true
 	training_mode.select(0 if snapshot.mode == "manual" else 1)
-	pace_mode.select(0 if snapshot.speed == "realtime" else 1)
+	_render_pacing()
 	auto_advance.set_pressed_no_signal(bool(snapshot.get("auto_advance", false)))
 	headline.text = "Evolution laboratory  ·  Generation %d" % int(snapshot.generation)
 	var lineage := str(snapshot.get("active_branch_name", ""))

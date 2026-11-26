@@ -32,6 +32,7 @@ PLAN = (
     Stage("after_reteaching", "Reversal recall", "Score the reversed rule with feedback removed.", 2 * PROBE_ROUNDS, reversed_rule=True, scored=True),
 )
 HISTORY_LIMIT = 64
+PROBE_PHASES = tuple(stage.id for stage in PLAN if not stage.teaching)
 
 
 @dataclass
@@ -79,6 +80,7 @@ class LabController:
         self.per_condition = per_condition
         self.mode = "manual"
         self.speed = "realtime"
+        self.preferred_rate = None
         self.running = False
         self.auto_advance = False
         self.history = []
@@ -102,6 +104,8 @@ class LabController:
                     self.schedule.append((lifetime, phase, index, cue, target))
         self.step = 0
         self.manual_overrides = 0
+        # Correct / observed choices pooled across the cohort, excluding teaching trials.
+        self.phase_counts = {name: [0, 0] for name in PROBE_PHASES}
         self.lifetime = 0
         lifetime_seed = derived_seed(self.lessons[0].seed, "lifetime")
         self.members = [Member(name, index, genome, identifier(genome), Wisp(genome, lifetime_seed))
@@ -121,6 +125,7 @@ class LabController:
         self.completed += 1
         self.history.append({
             "generation": self.generation, **self._summary(), "manual_overrides": self.manual_overrides,
+            "phase_counts": deepcopy(self.phase_counts),
             "by_condition": {name: mean(m.fitness for m in self.members if m.condition == name)
                              for name in CONDITIONS},
         })
@@ -161,6 +166,9 @@ class LabController:
             if stage.scored:
                 member.probes += 1
                 member.correct += int(action == lesson_target)
+            if not stage.teaching:
+                self.phase_counts[stage.id][0] += int(action == lesson_target)
+                self.phase_counts[stage.id][1] += 1
         self.total_choices += len(self.members)
         if stage.teaching:
             self.total_feedback += len(self.members)
@@ -185,7 +193,9 @@ class LabController:
             "version": 1, "seed": self.seed, "evolution_seed": self.evolution_seed,
             "per_condition": self.per_condition, "generation": self.generation, "step": self.step,
             "lifetime": self.lifetime, "selected": self.selected, "mode": self.mode,
-            "speed": self.speed, "running": self.running, "auto_advance": self.auto_advance,
+            "speed": self.speed, "preferred_rate": self.preferred_rate,
+            "running": self.running, "auto_advance": self.auto_advance,
+            "phase_counts": deepcopy(self.phase_counts),
             "manual_overrides": self.manual_overrides, "total_choices": self.total_choices,
             "total_feedback": self.total_feedback, "history": deepcopy(self.history),
             "members": [{"id": m.id, "choices": m.choices, "feedback": m.feedback,
@@ -220,6 +230,20 @@ class LabController:
         lab.total_choices = data["total_choices"]
         lab.total_feedback = data["total_feedback"]
         lab.manual_overrides = data["manual_overrides"]
+        if "phase_counts" in data:
+            counts = data["phase_counts"]
+            if not isinstance(counts, dict) or set(counts) != set(PROBE_PHASES):
+                raise ValueError("Invalid phase evidence in laboratory checkpoint.")
+            for stage_index, stage in enumerate(PLAN):
+                if stage.teaching:
+                    continue
+                seen = sum(row[1] == stage_index for row in lab.schedule[:step]) * len(lab.members)
+                values = counts[stage.id]
+                if (not isinstance(values, (tuple, list)) or len(values) != 2
+                        or any(type(n) is not int for n in values)
+                        or not 0 <= values[0] <= values[1] <= seen or values[1] % len(lab.members)):
+                    raise ValueError("Invalid phase counts in laboratory checkpoint.")
+                lab.phase_counts[stage.id] = list(values)
         for member, row, wisp in zip(lab.members, data["members"], wisps):
             member.wisp = wisp
             member.last_cue, member.last_action = wisp.last_cue, wisp.last_action
@@ -229,7 +253,8 @@ class LabController:
                     or not 0 <= member.feedback <= step):
                 raise ValueError("Invalid trial counts in laboratory checkpoint.")
         lab.command({"action": "select", "id": data["selected"]})
-        lab._configure({key: data[key] for key in ("mode", "speed", "running", "auto_advance")})
+        settings = {key: data[key] for key in ("mode", "speed", "running", "auto_advance")}
+        lab._configure(dict(settings, rate=data.get("preferred_rate")))
         return lab
 
     def fork(self, branch_key: str):
@@ -245,10 +270,13 @@ class LabController:
         return child
 
     def _configure(self, options):
-        if not options or options.keys() - {"mode", "speed", "running", "auto_advance"}:
+        if not options or options.keys() - {"mode", "speed", "rate", "running", "auto_advance"}:
             raise ValueError("Unknown or empty lab configuration.")
         mode = options.get("mode", self.mode)
         speed = options.get("speed", self.speed)
+        rate = options.get("rate", self.preferred_rate)
+        if rate is not None and (type(rate) is not int or not 1 <= rate <= 65536):
+            raise ValueError("Choose an automatic rate or an integer from 1 to 65536 trials per second.")
         auto_advance = options.get("auto_advance", self.auto_advance)
         running = options.get("running", self.running if mode == "auto" else False)
         if mode not in ("auto", "manual") or speed not in ("realtime", "accelerated"):
@@ -262,6 +290,7 @@ class LabController:
                 raise ValueError("Choose Next generation or enable auto-advance to continue.")
             running = False
         self.mode, self.speed, self.auto_advance, self.running = mode, speed, auto_advance, running
+        self.preferred_rate = rate
 
     def command(self, data):
         if not isinstance(data, dict) or not isinstance(data.get("action"), str):
@@ -302,7 +331,7 @@ class LabController:
             variant["rank"] = ranks.get(variant["fitness"])
         return {
             "seed": self.seed, "evolution_seed": str(self.evolution_seed),
-            "mode": self.mode, "speed": self.speed, "running": self.running,
+            "mode": self.mode, "speed": self.speed, "preferred_rate": self.preferred_rate, "running": self.running,
             "auto_advance": self.auto_advance, "awaiting_next": finished, "complete": finished,
             "generation": self.generation, "max_generations": None, "selected": self.selected,
             "population": len(variants), "step": self.step, "steps_per_generation": len(self.schedule),

@@ -1,6 +1,7 @@
 extends ScrollContainer
 
 signal open_lab
+signal open_report(branch_id: String, generation: int)
 
 const Address = preload("res://service_address.gd")
 const ThemeKit = preload("res://lab_theme.gd")
@@ -18,6 +19,7 @@ var score := Label.new()
 var variants := Tree.new()
 var branch_name := LineEdit.new()
 var fork_button := Button.new()
+var report_button := Button.new()
 var lineage_info := Label.new()
 var message := Label.new()
 var branch_items: Array = []
@@ -84,6 +86,7 @@ func _ready() -> void:
 	branch_name.custom_minimum_size.x = 180
 	fork_row.add_child(branch_name)
 	_button(fork_row, fork_button, "Branch from here", func(): _change_lineage(true))
+	_button(fork_row, report_button, "Generation summary", func(): open_report.emit(selected_branch, selected_generation))
 	fork_button.tooltip_text = "Start a separate lineage at the next generation. The source keeps its descendants."
 	_label(page, message, "", 14, Color("#f4ca8e"))
 	add_child(http)
@@ -278,6 +281,7 @@ func _controls() -> void:
 	refresh_button.disabled = busy
 	switch_button.disabled = busy or selected_branch.is_empty()
 	fork_button.disabled = busy or snapshot.is_empty()
+	report_button.disabled = fork_button.disabled
 	page_back.disabled = busy or cursors.size() < 2
 	page_forward.disabled = busy or not has_older
 	generations.mouse_filter = Control.MOUSE_FILTER_IGNORE if busy else Control.MOUSE_FILTER_STOP

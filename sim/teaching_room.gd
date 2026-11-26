@@ -3,6 +3,7 @@ extends Control
 const WispView = preload("res://wisp_view.gd")
 const LabPanel = preload("res://lab_panel.gd")
 const LineagePanel = preload("res://lineage_panel.gd")
+const DevelopmentPanel = preload("res://development_panel.gd")
 const LabTheme = preload("res://lab_theme.gd")
 const Address = preload("res://service_address.gd")
 const MUTED := Color("#b6c8d1")
@@ -49,6 +50,16 @@ func _ready() -> void:
 	tabs.add_child(lineages)
 	tabs.set_tab_title(2, "Lineages")
 	lineages.open_lab.connect(func(): tabs.current_tab = 0)
+	var development := DevelopmentPanel.new()
+	development.name = "Development"
+	tabs.add_child(development)
+	tabs.set_tab_title(3, "Plan & development")
+	lab.open_development.connect(func(topic_index: int):
+		tabs.current_tab = 3
+		development.show_report("", 0, topic_index))
+	lineages.open_report.connect(func(branch: String, generation: int):
+		tabs.current_tab = 3
+		development.show_report(branch, generation, 0))
 	var margin := MarginContainer.new()
 	personal.add_child(margin)
 	margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
