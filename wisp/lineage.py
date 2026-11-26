@@ -101,6 +101,19 @@ class LineageArchive:
         with self._lock:
             self._db.close()
 
+    def backup(self, destination, branch_id, live_tip):
+        """Copy the open database consistently, then seal the current trial in the copy."""
+        with self._lock:
+            if branch_id != self._active_id():
+                raise ValueError("The requested lineage is no longer active.")
+            target = sqlite3.connect(destination)
+            try:
+                self._db.backup(target)
+                with target:
+                    target.execute("UPDATE branches SET tip=? WHERE id=?", (_pack(live_tip), branch_id))
+            finally:
+                target.close()
+
     def _branch(self, branch_id):
         if not isinstance(branch_id, str) or not 1 <= len(branch_id) <= 64:
             raise ValueError("Supply a valid lineage ID.")

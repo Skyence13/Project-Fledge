@@ -82,9 +82,14 @@ func _ready() -> void:
 	lesson_steps.add_theme_constant_override("separation", 5)
 	var roadmap := _card(curriculum)
 	_label(roadmap, Label.new(), "Planned experiments", 19)
+	_label(roadmap, Label.new(), "After 128 cohort trials the lab saves the generation. Auto-advance breeds offspring for the same lesson. With auto-advance off, you can review the completed population.", 15)
 	_label(roadmap, Label.new(), "Next: delayed feedback and retention. Teach a second association, then probe the first without prompting.", 15)
 	_label(roadmap, Label.new(), "Later: body adaptation. Change a simulated sensor or movement delay and test whether earlier lessons survive recalibration.", 15)
 	_label(roadmap, Label.new(), "Physical transfer follows virtual qualification. A candidate must retain a taught rule going from Godot to the bench and back.", 15, Kit.MUTED)
+	var review := _card(curriculum)
+	_label(review, Label.new(), "When to change the curriculum", 19)
+	_label(review, Label.new(), "Review recall and reversal separately on fresh lessons across independent lineages. Keep a checkpoint on the original task before introducing a new one.", 15)
+	_label(review, Label.new(), "A specialized circuit is a testable hypothesis. If a lineage struggles with delayed recall, compare freely evolved wiring with a group-duplication variant. Test whether briefly silencing a candidate group selectively impairs recall while simple orientation survives.", 15, Kit.MUTED)
 
 	add_child(http)
 	http.timeout = 5

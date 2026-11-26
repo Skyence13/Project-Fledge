@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 import http.client
 import json
 from pathlib import Path
@@ -8,8 +9,10 @@ import threading
 import time
 import unittest
 from unittest.mock import patch
+from zipfile import ZipFile
 
 from wisp.core import Wisp, random_genome
+from wisp.lineage import LineageArchive
 from wisp.teach import TeachingHandler, build_server
 
 
@@ -192,6 +195,78 @@ class TeachingHTTPTests(unittest.TestCase):
         benchmark_thread = self.server._benchmark_thread
         self.stop_server()
         self.assertFalse(benchmark_thread.is_alive())
+
+    def test_export_failure_releases_locks_and_preserves_live_progress(self):
+        from wisp.teach import export_lab
+        before = self.server.lab.checkpoint()
+        self.request("/lab/export", {"path": "ad-hoc"}, 400)
+        with patch("wisp.teach.export_lab", side_effect=OSError("disk full")):
+            self.request("/lab/export", {}, 503)
+            self.assertEqual(self.server.lab.checkpoint(), before)
+            self.request("/lab/control", {"action": "configure", "mode": "auto", "running": True})
+            self.request("/lab/export", {}, 503)
+        self.assertTrue(self.request("/lab/state")["running"])
+        paused = self.request("/lab/control", {"action": "configure", "running": False})
+        entered = threading.Event()
+        finish = threading.Event()
+        def package_while_live(*args, snapshot_ready):
+            def drop_snapshot_lock():
+                snapshot_ready()
+                entered.set()
+                if not finish.wait(3):
+                    raise TimeoutError("Live experiment did not regain its lock")
+            return export_lab(*args, snapshot_ready=drop_snapshot_lock)
+        with patch("wisp.teach.export_lab", side_effect=package_while_live), ThreadPoolExecutor(1) as pool:
+            export = pool.submit(self.request, "/lab/export", {})
+            try:
+                self.assertTrue(entered.wait(3))
+                self.request("/lab/control", {"action": "configure", "mode": "manual"})
+                self.request("/lab/control", {"action": "step"})
+                self.request("/choice", {"cue": 0})
+                self.request("/lab/export", {}, 409)
+            finally:
+                finish.set()
+            bundle = export.result(5)
+        self.assertEqual(bundle["step"], paused["step"])
+        self.assertEqual(self.request("/lab/state")["step"], paused["step"] + 1)
+        self.assertTrue(self.request("/state")["pending"])
+        self.assertEqual(Path(bundle["path"]).parent, self.path.parent / "exports")
+
+    def test_export_captures_archived_generation_branch_tip_and_unsaved_personal_choice(self):
+        self.request("/save", {})
+        last_save = self.path.read_bytes()
+        self.request("/choice", {"cue": 1})
+        self.request("/feedback", {"value": -1})
+        self.request("/choice", {"cue": 0})
+        personal = self.server.session.wisp.checkpoint()
+        for _ in range(self.server.lab.state()["steps_per_generation"]):
+            self.server.lab_request({"action": "step"})
+        history = self.request("/lab/history")["generations"]
+        self.request("/lab/control", {"action": "branch", "branch": "main", "generation": 1})
+        live = self.request("/lab/control", {"action": "step"})
+        checkpoint = self.server.lab.checkpoint()
+        exported = self.request("/lab/export", {})
+        path = Path(exported["path"])
+        self.assertEqual(path.name, exported["filename"])
+        self.assertEqual((exported["branch_id"], exported["generation"], exported["step"]),
+                         (live["active_branch_id"], 2, 1))
+        self.assertEqual(self.path.read_bytes(), last_save)
+        self.assertEqual(self.server.session.wisp.checkpoint(), personal)
+        self.assertEqual(self.server.lab.checkpoint(), checkpoint)
+        self.assertEqual(len(self.request("/lab/branches")["branches"]), 2)
+        with ZipFile(path) as package:
+            self.assertIsNone(package.testzip())
+            self.assertEqual(json.loads(package.read("personal.json")), personal)
+            self.assertTrue(package.read("reports/generations.csv"))
+            self.assertIn("reports/summary.json", package.namelist())
+            copy = package.extract("personal.json.lineages.sqlite3", self.folder / "copy")
+        archive = LineageArchive(copy)
+        try:
+            active_id, tip = archive.start({})
+            self.assertEqual((active_id, tip), (live["active_branch_id"], checkpoint))
+            self.assertEqual(archive.history(active_id), history)
+        finally:
+            archive.close()
 
     def test_archive_browsing_fork_switch_and_restart(self):
         control = "/lab/control"

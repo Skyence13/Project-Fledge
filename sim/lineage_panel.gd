@@ -11,6 +11,15 @@ var http := HTTPRequest.new()
 var branches := OptionButton.new()
 var switch_button := Button.new()
 var refresh_button := Button.new()
+var export_button := Button.new()
+var export_dialog := AcceptDialog.new()
+var export_result: Dictionary = {}
+var export_filename := Label.new()
+var export_context := Label.new()
+var export_path := LineEdit.new()
+var copy_path_button := Button.new()
+var open_folder_button := Button.new()
+var export_note := Label.new()
 var page_back := Button.new()
 var page_forward := Button.new()
 var generations := ItemList.new()
@@ -53,6 +62,9 @@ func _ready() -> void:
 	branches.item_selected.connect(_choose_branch)
 	_button(tools, switch_button, "Open this lineage", func(): _change_lineage(false))
 	_button(tools, refresh_button, "Refresh", refresh)
+	_button(tools, export_button, "Export run…", func(): _send("export", "/lab/export"))
+	export_button.tooltip_text = "Save every lineage, the active population at its current trial, the personal Wisp, and readable reports in a portable ZIP."
+	_setup_export_dialog()
 	_label(page, lineage_info, "", 15, ThemeKit.ACCENT)
 	columns.add_theme_constant_override("separation", 15)
 	page.add_child(columns)
@@ -123,6 +135,66 @@ func _button(parent: Control, item: Button, caption: String, callback: Callable)
 	item.pressed.connect(callback)
 	parent.add_child(item)
 
+func _setup_export_dialog() -> void:
+	export_dialog.title = "Run exported"
+	export_dialog.ok_button_text = "Close"
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(205, 175)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	export_dialog.add_child(scroll)
+	var column := VBoxContainer.new()
+	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	column.add_theme_constant_override("separation", 7)
+	scroll.add_child(column)
+	_label(column, export_filename, "", 19, ThemeKit.ACCENT)
+	_label(column, export_context, "", 14)
+	_label(column, Label.new(), "Saved ZIP", 14, ThemeKit.MUTED)
+	export_path.editable = false
+	export_path.select_all_on_focus = true
+	export_path.add_theme_color_override("font_uneditable_color", ThemeKit.TEXT)
+	column.add_child(export_path)
+	var actions := HFlowContainer.new()
+	column.add_child(actions)
+	_button(actions, copy_path_button, "Copy path", _copy_export_path)
+	_button(actions, open_folder_button, "Open folder", _open_export_folder)
+	copy_path_button.visible = DisplayServer.has_feature(DisplayServer.FEATURE_CLIPBOARD)
+	open_folder_button.visible = OS.get_name() in ["Windows", "macOS", "Linux", "FreeBSD", "NetBSD", "OpenBSD"]
+	_label(column, export_note, "", 14, ThemeKit.ACCENT)
+	export_note.hide()
+	_label(column, Label.new(), "Copy the ZIP to the next computer. In its Project Fledge folder, use the ZIP’s new path below and choose a new import directory.", 14, ThemeKit.MUTED)
+	var commands := TextEdit.new()
+	commands.editable = false
+	commands.add_theme_color_override("font_readonly_color", ThemeKit.TEXT)
+	commands.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+	commands.custom_minimum_size.y = 96
+	commands.text = 'python -m wisp.transfer import --input "PATH-TO-ZIP" --destination "runs/imported-lab"\npython -m wisp.play --save "runs/imported-lab/personal.json"'
+	commands.tooltip_text = "Replace PATH-TO-ZIP with the archive path on the destination computer."
+	column.add_child(commands)
+	add_child(export_dialog)
+
+func _copy_export_path() -> void:
+	DisplayServer.clipboard_set(export_path.text)
+	export_note.text = "Copied the ZIP path."
+	export_note.show()
+
+func _open_export_folder() -> void:
+	var normalized := export_path.text.replace("\\", "/")
+	var result := OS.shell_open(normalized.get_base_dir())
+	if result != OK:
+		export_note.text = "This desktop could not open the folder. Use Copy path to locate the ZIP."
+		export_note.show()
+
+func _show_export(data: Dictionary) -> void:
+	export_result = data
+	export_filename.text = str(data.filename)
+	export_path.text = str(data.path)
+	export_path.tooltip_text = export_path.text
+	export_context.text = "Active lineage %s  ·  Generation %d  ·  Trial %d\nIncludes all lineages, the current population, your personal Wisp, and readable reports." % [
+		str(data.branch_name), int(data.generation), int(data.step)]
+	export_note.hide()
+	var window_size := get_viewport_rect().size
+	export_dialog.popup_centered(Vector2i(clampi(int(window_size.x) - 60, 240, 620), clampi(int(window_size.y) - 70, 260, 460)))
+
 func _shown() -> void:
 	if is_visible_in_tree() and is_node_ready() and pending.is_empty():
 		refresh()
@@ -191,11 +263,14 @@ func _send(kind: String, path: String, data: Dictionary = {}) -> void:
 	if not pending.is_empty():
 		return
 	pending = kind
-	message.text = ""
+	message.text = "Creating the portable run archive…" if kind == "export" else ""
 	_controls()
-	var method := HTTPClient.METHOD_GET if data.is_empty() else HTTPClient.METHOD_POST
+	var post := not data.is_empty() or kind == "export"
+	var method := HTTPClient.METHOD_POST if post else HTTPClient.METHOD_GET
+	# A large archive can take time to write on the lab PC.
+	http.timeout = 0.0 if kind == "export" else 7.0
 	var err := http.request(Address.base_url() + path, ["Content-Type: application/json"], method,
-		"" if data.is_empty() else JSON.stringify(data))
+		JSON.stringify(data) if post else "")
 	if err != OK:
 		_fail("Could not contact the lineage archive. Use Refresh to try again.")
 
@@ -215,6 +290,12 @@ func _received(result: int, code: int, _headers: PackedStringArray, body: Packed
 		_fail(str(data.get("error", "The archive request failed.")))
 		return
 	match kind:
+		"export":
+			if not data.has("filename") or not data.has("path") or not data.has("branch_name") or not data.has("generation") or not data.has("step"):
+				_fail("The service did not return the location of the exported run.")
+				return
+			message.text = "Run exported to " + str(data.path)
+			_show_export(data)
 		"branches":
 			branch_items = data.branches
 			active_id = str(data.active_branch_id)
@@ -279,6 +360,7 @@ func _controls() -> void:
 	var busy := not pending.is_empty()
 	branches.disabled = busy or branch_items.is_empty()
 	refresh_button.disabled = busy
+	export_button.disabled = busy
 	switch_button.disabled = busy or selected_branch.is_empty()
 	fork_button.disabled = busy or snapshot.is_empty()
 	report_button.disabled = fork_button.disabled

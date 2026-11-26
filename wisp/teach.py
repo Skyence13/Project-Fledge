@@ -2,6 +2,7 @@
 
 import argparse
 from concurrent.futures import CancelledError
+from contextlib import ExitStack
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -19,6 +20,7 @@ from .calibration import AdaptivePacer, LIVE_MAX_BATCH, LIVE_MAX_BATCH_SECONDS, 
 from .development import assess
 from .lab import LabController
 from .lineage import LineageArchive
+from .transfer import export_lab
 
 
 MAX_REQUEST_BYTES = 4096
@@ -162,7 +164,7 @@ class TeachingHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = urlsplit(self.path).path
         try:
-            if path not in ("/choice", "/feedback", "/save", "/load", "/lab/control"):
+            if path not in ("/choice", "/feedback", "/save", "/load", "/lab/control", "/lab/export"):
                 raise TeachingError(HTTPStatus.NOT_FOUND, "Unknown teaching endpoint.")
             if self.headers.get_content_type() != "application/json":
                 raise TeachingError(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "Send Content-Type: application/json.")
@@ -180,6 +182,10 @@ class TeachingHandler(BaseHTTPRequestHandler):
                 raise TeachingError(HTTPStatus.BAD_REQUEST, "Provide a JSON object.")
             if path == "/lab/control":
                 state = self.server.lab_request(data)
+            elif path == "/lab/export":
+                if data:
+                    raise TeachingError(HTTPStatus.BAD_REQUEST, "Export accepts an empty JSON object.")
+                state = self.server.export_run()
             else:
                 state = self.server.session.request(path, data)
         except TeachingError as error:
@@ -205,6 +211,7 @@ class TeachingServer(ThreadingHTTPServer):
         self._pending_tip = None
         self._archive_error = None
         self._clock = threading.Condition()
+        self._export_lock = threading.Lock()
         self._deadline = None
         self._closed = False
         self._benchmark = None
@@ -277,6 +284,34 @@ class TeachingServer(ThreadingHTTPServer):
         if self._pending_tip is not None:
             self.archive.save_tip(*self._pending_tip)
             self._pending_tip = None
+
+    def export_run(self):
+        if not self._export_lock.acquire(blocking=False):
+            raise TeachingError(HTTPStatus.CONFLICT, "A run export is already in progress.")
+        try:
+            with ExitStack() as held:
+                held.enter_context(self._clock)
+                if self._closed:
+                    raise TeachingError(HTTPStatus.SERVICE_UNAVAILABLE, "Laboratory is closing.")
+                if self._pending_record is not None:
+                    raise TeachingError(HTTPStatus.SERVICE_UNAVAILABLE,
+                                        "Resolve the pending generation archive write before exporting.")
+                with self.session.lock:
+                    # Both minds are stable at this instant. The personal copy now belongs to the export.
+                    personal = self.session.wisp.checkpoint()
+                    live_tip = self.lab.checkpoint()
+                snapshot = {"branch_id": self.branch_id, "branch_name": self.branch_name,
+                            "generation": self.lab.generation, "step": self.lab.step}
+                directory = self.session.save_path.parent / "exports"
+                package = export_lab(self.archive, self.branch_id, live_tip, personal, directory,
+                                     snapshot_ready=held.close)
+            return {**snapshot, "filename": package.name, "path": str(package.resolve())}
+        except TeachingError:
+            raise
+        except (OSError, ValueError, sqlite3.Error) as error:
+            raise TeachingError(HTTPStatus.SERVICE_UNAVAILABLE, f"Could not export this run: {error}") from error
+        finally:
+            self._export_lock.release()
 
     def _archive_completion(self, previous_completed):
         if self.lab.completed > previous_completed:
@@ -489,6 +524,9 @@ class TeachingServer(ThreadingHTTPServer):
             self._worker.join()
         if self._benchmark_thread.is_alive():
             self._benchmark_thread.join()
+        # A desktop launcher may exit while a ZIP is being written by a daemon HTTP thread.
+        with self._export_lock:
+            pass
         try:
             if self.archive is not None:
                 try:

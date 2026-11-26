@@ -20,6 +20,8 @@ A Wisp is one individual learning mind. The laboratory evolves populations of vi
 
 The [README](../README.md) gives the runnable entry points and the scope of the current prototype.
 
+Use [the curriculum review plan](CURRICULUM.md) to decide what evidence warrants the next lesson or a new circuit mutation. Its proposed pilot thresholds and intervention experiments are design decisions for review. The running lab automatically breeds generations within the current protocol.
+
 The interactive lab supports counterbalanced lifetimes, manual or automatic teaching, an adjustable clock and continuous generation advancement. The lineage archive stores completed populations and the progress of the active run. Forking from a selected generation creates an independent line of offspring. The original line remains available. Distinguish these lineage-level branch records from a full pedigree for individual Wisps.
 
 The lab can benchmark the current workload and adjust acceleration, and supports 16, 32 or 64 candidates across the four conditions. Inspect the current run at `GET /lab/development` or in **Plan & development**. Scores describe performance on the current lesson; claims about generalization require held-out trials. Archive versions that predate the phase counters retain their original pooled fitness. The report identifies missing phase-level evidence.

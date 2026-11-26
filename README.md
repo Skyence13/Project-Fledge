@@ -50,6 +50,21 @@ Use the lineage selector and **Open this lineage** to return to a previous popul
 
 The local SQLite file sits beside the personal save with the suffix `.lineages.sqlite3`. Archive size grows as generations accumulate. Reopen with the same `--save` path to use the same archive. To run a second independent laboratory, choose another save path and add `--port 0` to use an available port.
 
+### Export results or move a run to another computer
+
+While the lab is open, go to **Lineages → Export run**. The dialog gives you the path to a ZIP in the `exports` directory beside your personal save. The snapshot includes all archived lineages and generations, the precise active trial, and the personal Wisp as it stands at export time, including a pending choice. It also contains machine-readable results and a CSV you can open in a spreadsheet. You can export before the first generation finishes.
+
+Copy the ZIP to the destination PC and install Python 3.11+ and Godot 4.6. Use the same Project Fledge source revision on both machines. During review the source is on `prototype/wisp-lab` in [Skyence13/Project-Fledge](https://github.com/Skyence13/Project-Fledge/tree/prototype/wisp-lab). From the project root on the destination, replace the ZIP path below and choose a **new** directory for the imported run.
+
+```sh
+python -m wisp.transfer import --input "path/to/export.zip" --destination "runs/imported-lab"
+python -m wisp.play --save "runs/imported-lab/personal.json"
+```
+
+If Godot is outside PATH, add `--godot "path/to/Godot"` to the second command. The imported run opens paused. Use **Computer speed check** on the destination or let adaptive mode calibrate on startup. Starting both copies gives you two independent continuations of the exported point.
+
+The `runs` directory is local and excluded from Git. The live archive records population checkpoints and aggregate scores. Use **Save learning** separately to retain the personal Wisp between ordinary sessions. Standalone `wisp.experiment` output directories contain their own reports, timings and champion files; copy those directories separately if you want them on the new machine. For the end-of-lesson rules, proposed advancement criteria and circuit experiments, see the [curriculum review plan](docs/CURRICULUM.md).
+
 ### Teach a personal Wisp
 
 Open the **Personal Wisp** tab. This individual has its own lifetime and checkpoint.
