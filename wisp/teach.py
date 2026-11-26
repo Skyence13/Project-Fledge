@@ -1,4 +1,4 @@
-"""Loopback HTTP interface for teaching one Wisp in the Godot arena."""
+"""Loopback HTTP service for the teaching room and the live evolution experiment."""
 
 import argparse
 from http import HTTPStatus
@@ -7,14 +7,19 @@ import json
 import os
 from pathlib import Path
 import random
+import sqlite3
 import tempfile
 import threading
-from urllib.parse import urlsplit
+import time
+from urllib.parse import parse_qs, urlsplit
 
 from .core import Wisp, random_genome
+from .lab import LabController
+from .lineage import LineageArchive
 
 
 MAX_REQUEST_BYTES = 4096
+TRIALS_PER_SECOND = {"realtime": 1, "accelerated": 16}
 
 
 class TeachingError(ValueError):
@@ -114,6 +119,12 @@ class TeachingSession:
 
 
 class TeachingHandler(BaseHTTPRequestHandler):
+    def log_request(self, code="-", size="-"):
+        # Dashboard polls can run all day. Keep control changes and failed polls in the log.
+        if self.command == "GET" and urlsplit(self.path).path == "/lab/state" and code == HTTPStatus.OK:
+            return
+        super().log_request(code, size)
+
     def reply(self, status, data):
         response = json.dumps(data, allow_nan=False).encode("utf-8")
         self.send_response(status)
@@ -124,15 +135,31 @@ class TeachingHandler(BaseHTTPRequestHandler):
         self.wfile.write(response)
 
     def do_GET(self):
-        if urlsplit(self.path).path != "/state":
-            self.reply(HTTPStatus.NOT_FOUND, {"error": "Use GET /state to inspect the Wisp."})
+        route = urlsplit(self.path)
+        try:
+            if route.path == "/state":
+                state = self.server.session.request(route.path)
+            elif route.path == "/lab/state":
+                state = self.server.lab_request()
+            elif route.path in ("/lab/branches", "/lab/history", "/lab/generation"):
+                query = parse_qs(route.query, keep_blank_values=True, strict_parsing=True, max_num_fields=3)
+                if any(len(values) != 1 for values in query.values()):
+                    raise ValueError("Use each query parameter once.")
+                state = self.server.lineage_view(route.path, {key: values[0] for key, values in query.items()})
+            else:
+                raise TeachingError(HTTPStatus.NOT_FOUND, "Unknown endpoint.")
+        except ValueError as error:
+            self.reply(getattr(error, "status", HTTPStatus.BAD_REQUEST), {"error": str(error)})
             return
-        self.reply(HTTPStatus.OK, self.server.session.request("/state"))
+        except sqlite3.Error:
+            self.reply(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "Could not read the lineage archive."})
+            return
+        self.reply(HTTPStatus.OK, state)
 
     def do_POST(self):
         path = urlsplit(self.path).path
         try:
-            if path not in ("/choice", "/feedback", "/save", "/load"):
+            if path not in ("/choice", "/feedback", "/save", "/load", "/lab/control"):
                 raise TeachingError(HTTPStatus.NOT_FOUND, "Unknown teaching endpoint.")
             if self.headers.get_content_type() != "application/json":
                 raise TeachingError(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "Send Content-Type: application/json.")
@@ -148,9 +175,15 @@ class TeachingHandler(BaseHTTPRequestHandler):
                 raise TeachingError(HTTPStatus.BAD_REQUEST, "Provide a valid UTF-8 JSON object.") from error
             if not isinstance(data, dict):
                 raise TeachingError(HTTPStatus.BAD_REQUEST, "Provide a JSON object.")
-            state = self.server.session.request(path, data)
+            if path == "/lab/control":
+                state = self.server.lab_request(data)
+            else:
+                state = self.server.session.request(path, data)
         except TeachingError as error:
             self.reply(error.status, {"error": str(error)})
+            return
+        except sqlite3.Error:
+            self.reply(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "Could not update the lineage archive."})
             return
         except OSError:
             self.reply(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "Could not read or write the checkpoint file."})
@@ -158,11 +191,179 @@ class TeachingHandler(BaseHTTPRequestHandler):
         self.reply(HTTPStatus.OK, state)
 
 
-def build_server(port: int, seed: int, save_path: Path, resume_path: Path | None = None) -> ThreadingHTTPServer:
+class TeachingServer(ThreadingHTTPServer):
+    """One personal Wisp and one separately clocked population per server."""
+
+    def __init__(self, port, seed, session):
+        self.session = session
+        self.seed = seed
+        self.archive = None
+        self._pending_record = None
+        self._pending_tip = None
+        self._archive_error = None
+        self._clock = threading.Condition()
+        self._deadline = None
+        self._closed = False
+        self._worker = threading.Thread(target=self._run_lab, name="fledge-lab", daemon=True)
+        super().__init__(("127.0.0.1", port), TeachingHandler)
+        try:
+            path = session.save_path.with_name(session.save_path.name + ".lineages.sqlite3")
+            self.archive = LineageArchive(path)
+            start = LabController(seed=seed)
+            self.branch_id, tip = self.archive.start(start.checkpoint())
+            self.branch_name = self._active_name()
+            self.lab = self._restore_lab(tip)
+            self.lab.running = False
+            self._worker.start()
+        except Exception:
+            if self.archive is not None:
+                self.archive.close()
+            super().server_close()
+            raise
+
+    @staticmethod
+    def _restore_lab(snapshot):
+        try:
+            return LabController.restore(snapshot)
+        except (AttributeError, KeyError, IndexError, TypeError, ValueError, OverflowError) as error:
+            raise ValueError("This lineage checkpoint contains invalid population data.") from error
+
+    def lineage_view(self, path, query):
+        with self._clock:
+            if self._closed:
+                raise TeachingError(HTTPStatus.SERVICE_UNAVAILABLE, "Laboratory is closing.")
+            if path == "/lab/branches" and not query:
+                return {"active_branch_id": self.branch_id, "branches": self.archive.branches()}
+            branch = query.get("branch", self.branch_id)
+            if path == "/lab/history" and query.keys() <= {"branch", "before", "limit"}:
+                before = int(query["before"]) if "before" in query else None
+                rows = self.archive.history(branch, before=before, limit=int(query.get("limit", 20)))
+                return {"branch": branch, "generations": rows}
+            if path == "/lab/generation" and "generation" in query and query.keys() <= {"branch", "generation"}:
+                generation = int(query["generation"])
+                historical = self._restore_lab(self.archive.snapshot(branch, generation))
+                return {"branch": branch, "generation": generation, "state": historical.state()}
+            raise ValueError("Invalid query parameters.")
+
+    def _flush_writes(self):
+        if self._pending_record is not None:
+            try:
+                self.archive.record(*self._pending_record)
+            except ValueError as error:
+                raise sqlite3.IntegrityError("Generation archive is inconsistent.") from error
+            self._pending_record = None
+        if self._pending_tip is not None:
+            self.archive.save_tip(*self._pending_tip)
+            self._pending_tip = None
+
+    def _archive_completion(self, previous_completed):
+        if self.lab.completed > previous_completed:
+            self._pending_record = (self.branch_id, self.lab.generation,
+                                    self.lab.checkpoint(), self.lab.history[-1])
+            self._flush_writes()
+
+    def _change_branch(self, command):
+        source_tip = self.lab.checkpoint()
+        if (command["action"] == "branch" and {"branch", "generation"} <= command.keys()
+                and command.keys() <= {"action", "branch", "generation", "name"}):
+            def make_tip(snapshot, child_id):
+                return self._restore_lab(snapshot).fork(child_id).checkpoint()
+            branch, tip = self.archive.fork(command["branch"], command["generation"], command.get("name"),
+                                            source_tip, make_tip)
+        elif command["action"] == "switch" and set(command) == {"action", "branch"}:
+            branch, tip = self.archive.switch(command["branch"], source_tip, validate_tip=self._restore_lab)
+        elif command == {"action": "reset"}:
+            fresh = LabController(seed=self.seed).checkpoint()
+            branch, tip = self.archive.new_run(fresh, source_tip)
+        else:
+            raise ValueError("Invalid lineage command parameters.")
+        self.lab = self._restore_lab(tip)
+        self.lab.running = False
+        self.branch_id = branch
+        self.branch_name = self._active_name()
+
+    def _active_name(self):
+        return next(branch["name"] for branch in self.archive.branches() if branch["id"] == self.branch_id)
+
+    def lab_request(self, command=None):
+        with self._clock:
+            if self._closed:
+                raise TeachingError(HTTPStatus.SERVICE_UNAVAILABLE, "Laboratory is closing.")
+            if command is not None:
+                previous = (self.lab.running, self.lab.speed)
+                completed = self.lab.completed
+                try:
+                    self._flush_writes()
+                    if command.get("action") in ("branch", "switch", "reset"):
+                        self._change_branch(command)
+                    else:
+                        self.lab.command(command)
+                        self._archive_completion(completed)
+                        if previous[0] and not self.lab.running:
+                            self._pending_tip = (self.branch_id, self.lab.checkpoint())
+                            self._flush_writes()
+                    self._archive_error = None
+                except ValueError as error:
+                    raise TeachingError(HTTPStatus.BAD_REQUEST, str(error)) from error
+                except (sqlite3.Error, OSError) as error:
+                    self.lab.running = False
+                    self._archive_error = "Lineage write failed. Check archive access and free disk space."
+                    raise TeachingError(HTTPStatus.SERVICE_UNAVAILABLE, self._archive_error) from error
+                if previous != (self.lab.running, self.lab.speed):
+                    self._deadline = None
+                    self._clock.notify()
+            return {**self.lab.state(), "active_branch_id": self.branch_id,
+                    "active_branch_name": self.branch_name, "archive_error": self._archive_error}
+
+    def _run_lab(self):
+        with self._clock:
+            while not self._closed:
+                if not self.lab.running:
+                    self._deadline = None
+                    self._clock.wait()
+                    continue
+                interval = 1 / TRIALS_PER_SECOND[self.lab.speed]
+                now = time.monotonic()
+                if self._deadline is None:
+                    self._deadline = now + interval
+                remaining = self._deadline - now
+                if remaining > 0:
+                    self._clock.wait(remaining)
+                    continue
+                completed = self.lab.completed
+                self.lab.tick()
+                try:
+                    self._archive_completion(completed)
+                except (sqlite3.Error, OSError):
+                    self.lab.running = False
+                    self._archive_error = "Lineage write failed. Check archive access and free disk space."
+                # Drop missed deadlines after host suspension; never replay a burst.
+                self._deadline = time.monotonic() + interval
+
+    def server_close(self):
+        with self._clock:
+            self._closed = True
+            self._clock.notify()
+        if self._worker.is_alive():
+            self._worker.join()
+        try:
+            if self.archive is not None:
+                try:
+                    self._flush_writes()
+                    self.archive.save_tip(self.branch_id, self.lab.checkpoint())
+                finally:
+                    self.archive.close()
+                    self.archive = None
+        finally:
+            super().server_close()
+
+
+def build_server(port: int, seed: int, save_path: Path, resume_path: Path | None = None) -> TeachingServer:
     session = TeachingSession(seed, save_path, resume_path)
-    server = ThreadingHTTPServer(("127.0.0.1", port), TeachingHandler)
-    server.session = session
-    return server
+    try:
+        return TeachingServer(port, seed, session)
+    except sqlite3.Error as error:
+        raise ValueError(f"Could not open the lineage archive: {error}") from error
 
 
 def main():
@@ -180,7 +381,7 @@ def main():
             server.serve_forever()
     except KeyboardInterrupt:
         pass
-    except (TeachingError, OSError, OverflowError) as error:
+    except (ValueError, OSError, sqlite3.Error, OverflowError) as error:
         parser.exit(1, f"Could not start teaching server: {error}\n")
 
 

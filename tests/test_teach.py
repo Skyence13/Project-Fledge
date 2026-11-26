@@ -2,8 +2,10 @@ import http.client
 import json
 from pathlib import Path
 import random
+import sqlite3
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -49,9 +51,9 @@ class TeachingHTTPTests(unittest.TestCase):
             result = connection.getresponse()
             data = json.loads(result.read())
             self.assertEqual(result.status, expected, data)
-            if expected == 200:
+            if expected == 200 and not path.startswith("/lab/"):
                 self.assertEqual(set(data), {"cue", "action", "pending", "trials", "saved"})
-            else:
+            elif expected != 200:
                 self.assertIsInstance(data["error"], str)
             return data
         finally:
@@ -82,6 +84,109 @@ class TeachingHTTPTests(unittest.TestCase):
         self.request("/feedback", {"value": 1}, 409)
         self.assertEqual(self.request("/load", {}), saved)
         self.assertEqual(self.request("/feedback", {"value": -1}), result)
+
+    def test_manual_lab_steps_are_independent_of_personal_teaching(self):
+        personal = self.request("/choice", {"cue": 0})
+        initial = self.request("/lab/state")
+        self.assertEqual(initial, self.request("/lab/state"))
+        self.assertEqual(initial["step"], 0)
+        selected = self.request("/lab/control", {"action": "select", "id": "rules_only:1"})
+        self.assertEqual(selected["selected"], "rules_only:1")
+        stepped = self.request("/lab/control", {"action": "step"})
+        self.assertEqual(stepped["step"], 1)
+        self.assertGreater(stepped["stats"]["total_choices"], 0)
+        self.request("/lab/control", {"action": "does_not_exist"}, 400)
+        self.assertEqual(self.request("/lab/state"), stepped)
+        self.assertEqual(self.request("/state"), personal)
+        self.request("/save", {})
+        self.assertEqual(self.request("/lab/state"), stepped)
+
+    def test_auto_clock_runs_without_polling_and_pauses(self):
+        control = "/lab/control"
+        running = self.request(control, {"action": "configure", "mode": "auto",
+                                         "speed": "accelerated", "running": True})
+        self.assertEqual(running["speed"], "accelerated")
+        # Wait for the clock itself; HTTP reads must never drive ticks.
+        event = threading.Event()
+        original_tick = self.server.lab.tick
+        def observe_tick():
+            original_tick()
+            event.set()
+        with patch.object(self.server.lab, "tick", side_effect=observe_tick):
+            self.assertTrue(event.wait(3), "Accelerated clock did not tick")
+        paused = self.request(control, {"action": "configure", "running": False})
+        self.assertGreater(paused["step"], 0)
+        time.sleep(.18)
+        self.assertEqual(self.request("/lab/state"), paused)
+        slower = self.request(control, {"action": "configure", "speed": "realtime"})
+        self.assertEqual(slower["speed"], "realtime")
+        self.assertEqual(slower["step"], paused["step"])
+        worker = self.server._worker
+        self.stop_server()
+        self.assertFalse(worker.is_alive())
+
+    def test_archive_browsing_fork_switch_and_restart(self):
+        control = "/lab/control"
+        self.request("/choice", {"cue": 1})
+        self.request("/save", {})
+        personal = self.path.read_bytes()
+        initial = self.request("/lab/state")
+        for _ in range(initial["steps_per_generation"] - 1):
+            self.server.lab_request({"action": "step"})
+        final = self.request(control, {"action": "step"})
+        self.assertTrue(final["awaiting_next"])
+        history = self.request("/lab/history?branch=main&limit=5")
+        self.assertEqual([row["generation"] for row in history["generations"]], [1])
+        old = self.request("/lab/generation?branch=main&generation=1")
+        self.assertEqual(old["state"]["variants"], final["variants"])
+        self.request(control, {"action": "next_generation"})
+        live = self.request(control, {"action": "step"})
+        self.assertEqual(self.request("/lab/generation?branch=main&generation=1"), old)
+        self.assertEqual(self.request("/lab/state"), live)
+
+        child = self.request(control, {"action": "branch", "branch": "main", "generation": 1, "name": "Compare memory"})
+        child_id = child["active_branch_id"]
+        self.assertNotEqual(child_id, "main")
+        self.assertEqual((child["generation"], child["step"], child["running"]), (2, 0, False))
+        generations = self.request("/lab/history?branch=" + child_id)["generations"]
+        self.assertEqual(generations[0]["branch_id"], "main")
+        self.assertEqual(self.request("/lab/generation?branch=main&generation=1"), old)
+        child = self.request(control, {"action": "step"})
+        self.assertEqual(self.request(control, {"action": "switch", "branch": "main"}), live)
+        self.stop_server()
+        self.start_server()
+        self.assertEqual(self.request("/lab/state"), live)
+        self.assertEqual(self.request(control, {"action": "switch", "branch": child_id}), child)
+        reset = self.request(control, {"action": "reset"})
+        self.assertEqual((reset["generation"], reset["step"]), (1, 0))
+        branches = self.request("/lab/branches")["branches"]
+        self.assertEqual(len(branches), 3)
+        self.assertEqual(self.path.read_bytes(), personal)
+        self.request("/lab/generation?generation=1&generation=2", expected=400)
+        self.request("/lab/history?branch=missing", expected=400)
+        self.request(control, {"action": "branch", "branch": "main", "generation": 500, "name": "missing"}, 400)
+        self.assertEqual(self.request("/lab/state"), reset)
+
+    def test_failed_archive_writes_are_retried_before_advancing(self):
+        control = "/lab/control"
+        self.request(control, {"action": "step"})
+        self.request(control, {"action": "configure", "mode": "auto", "running": True})
+        with patch.object(self.server.archive, "save_tip", side_effect=sqlite3.OperationalError("disk full")):
+            self.request(control, {"action": "configure", "running": False}, 503)
+        self.assertIsNotNone(self.request("/lab/state")["archive_error"])
+        recovered = self.request(control, {"action": "configure", "running": False, "mode": "manual"})
+        self.assertIsNone(recovered["archive_error"])
+        _, durable = self.server.archive.start({})
+        self.assertEqual(durable["step"], 1)
+        for _ in range(recovered["steps_per_generation"] - 2):
+            self.server.lab_request({"action": "step"})
+        with patch.object(self.server.archive, "record", side_effect=sqlite3.OperationalError("disk full")):
+            self.request(control, {"action": "step"}, 503)
+            self.request(control, {"action": "next_generation"}, 503)
+            self.assertEqual(self.request("/lab/history")["generations"], [])
+        next_state = self.request(control, {"action": "next_generation"})
+        self.assertEqual((next_state["generation"], next_state["step"]), (2, 0))
+        self.assertEqual(self.request("/lab/history")["generations"][0]["generation"], 1)
 
     def test_restart_with_pending_feedback_and_exact_continuation(self):
         self.request("/choice", {"cue": 0})
@@ -128,7 +233,7 @@ class TeachingHTTPTests(unittest.TestCase):
         with patch("wisp.teach.os.replace", side_effect=OSError("read only")):
             self.request("/save", {}, 500)
         self.assertEqual(self.path.read_bytes(), saved)
-        self.assertEqual(list(self.path.parent.iterdir()), [self.path])
+        self.assertEqual(list(self.path.parent.glob(".personal.json.*.tmp")), [])
         for corrupt in ("truncated{", "{}", '{"pending": false}'):
             self.path.write_text(corrupt, encoding="utf-8")
             self.request("/load", {}, 422)

@@ -4,7 +4,7 @@ A **Wisp** is one learning individual. In this first experiment, a teacher priva
 
 For a fresh Codex session, start with [the handoff](docs/HANDOFF.md) and [the Wisp implementation brief](docs/Project_Fledge_Wisp_Implementation_Brief.md).
 
-## Teach a Wisp
+## Open the laboratory
 
 Run the commands from the repository root with Python 3.11 or later. The teaching room also requires a Godot 4.6 executable. The Python code uses the standard library.
 
@@ -18,12 +18,39 @@ The launcher finds `godot` or `godot4` on your PATH. On Windows you can also giv
 python -m wisp.play --godot "C:\Tools\Godot\Godot.exe"
 ```
 
+### Run and watch a population
+
+The **Evolution lab** opens with 16 Wisps, four candidates for each combination of fixed or evolvable neuron dynamics and wiring. The four groups share their founders. Select a Wisp in the roster to inspect its genome, network size, learning rate, responses and score. Changing the selection leaves the experiment running.
+
+Each Wisp experiences baseline probes, teaching, recall, a rule reversal, reteaching, and reversal recall. The six stages repeat with the opposite cue assignment in a fresh lifetime. The lab displays the current stage, cue and progress. Fitness is the fraction of correct responses during the two recall stages, when feedback is withheld. These are selection scores on the current lessons. The batch experiment below provides an independent held-out evaluation.
+
+| Control | What it does |
+| --- | --- |
+| Manual | **Step lesson** advances one cue for every Wisp. During teaching, **Teach left** or **Teach right** grades the choices against the direction you select. |
+| Automatic | **Start** delivers the scheduled lessons and grades responses. **Pause** holds the current trial position. |
+| Real time / Accelerated | Sets the automatic clock to 1 or 16 cohort trials per second. Both speeds use the same cues, neural updates and feedback. Manual trials advance on a click. |
+| Auto-advance generations | When enabled with automatic training running, the lab selects parents and breeds the next population at each boundary. When disabled it holds the completed cohort for inspection. **Next generation** breeds one generation on demand. |
+
+For an unattended run, choose **Automatic**, **Accelerated**, **Auto-advance generations**, then **Start**. The server keeps advancing when you view another tab. Keep the laboratory process running and the computer awake.
+
+### Inspect history or start a branch
+
+Open **Lineages**, select a lineage, then a saved generation. You can inspect its final population and fitness while the active population continues. Give the new lineage a name and choose **Branch from here**. Branching from generation 5 opens generation 6 with fresh offspring. The new lineage inherits the selected parents and its own reproducible mutation stream. The lesson schedule remains matched for comparison.
+
+Use the lineage selector and **Open this lineage** to return to a previous population at its saved progress. Only one lineage trains at a time. Each completed generation is archived before the next one begins. Pausing automatic training, switching lineages, or closing the room normally also saves progress within the current generation. After an abrupt process exit, the run recovers from its last saved point. Reopened lineages start paused.
+
+The local SQLite file sits beside the personal save with the suffix `.lineages.sqlite3`. Archive size grows as generations accumulate. Reopen with the same `--save` path to use the same archive. To run a second independent laboratory, choose another save path and add `--port 0` to use an available port.
+
+### Teach a personal Wisp
+
+Open the **Personal Wisp** tab. This individual has its own lifetime and checkpoint.
+
 1. Pick which cue means left and which means right. Keep the assignment to yourself.
 2. Present a cue, watch the Wisp turn its gaze, and respond to its choice. Alternate the cues over several rounds.
 3. Reverse your assignment and watch how many interactions the Wisp takes to change its response.
 4. Use **Save learning** to preserve this individual. The default file is `runs/personal.json`. Launching again resumes it. Use a new file with `--save runs/second-wisp.json` to start a separate lifetime. The launcher uses local port 8765.
 
-## Evolve a population
+## Run a batch comparison
 
 ```sh
 python -m wisp.experiment --seed 7 --population 8 --generations 3 --workers 1 --output runs/demo
@@ -50,4 +77,4 @@ python -m unittest discover -s tests -v
 
 The first lesson uses symbolic light sensors, immediate feedback, and two turn actions. The batch runner uses the same sensor/action interface as Godot and steps the neural model directly. Its timings measure learning throughput for this task. Physics-based locomotion, natural-language teaching, and transfer between bodies belong to later experiments.
 
-The next question is whether a Wisp can retain an association through an intervening task and still assign feedback to an earlier choice. The brief also calls for resumable populations, ancestry records, and throughput measurements on the target lab PC before launching long evolutionary runs.
+The next question is whether a Wisp can retain an association through an intervening task and still assign feedback to an earlier choice. The research plan also calls for recording each offspring's parents and benchmarking throughput on the intended lab PC.

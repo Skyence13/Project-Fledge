@@ -1,7 +1,10 @@
 extends Control
 
 const WispView = preload("res://wisp_view.gd")
-const ENDPOINT := "http://127.0.0.1:8765"
+const LabPanel = preload("res://lab_panel.gd")
+const LineagePanel = preload("res://lineage_panel.gd")
+const LabTheme = preload("res://lab_theme.gd")
+const Address = preload("res://service_address.gd")
 const MUTED := Color("#b6c8d1")
 
 var http := HTTPRequest.new()
@@ -20,18 +23,43 @@ var busy := false
 var pending := false
 var saved := false
 var current_path := ""
+var tabs := TabContainer.new()
 
 func _ready() -> void:
+	get_window().title = "Project Fledge | Wisp laboratory"
+	theme = LabTheme.make_theme()
+	var frame := MarginContainer.new()
+	add_child(frame)
+	frame.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	for side in ["left", "right", "top", "bottom"]:
+		frame.add_theme_constant_override("margin_" + side, 12)
+	tabs.name = "Rooms"
+	frame.add_child(tabs)
+	var lab := LabPanel.new()
+	lab.name = "EvolutionLab"
+	tabs.add_child(lab)
+	tabs.set_tab_title(0, "Evolution lab")
+	var personal := ScrollContainer.new()
+	personal.name = "PersonalWisp"
+	personal.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	tabs.add_child(personal)
+	tabs.set_tab_title(1, "Personal Wisp")
+	var lineages := LineagePanel.new()
+	lineages.name = "Lineages"
+	tabs.add_child(lineages)
+	tabs.set_tab_title(2, "Lineages")
+	lineages.open_lab.connect(func(): tabs.current_tab = 0)
 	var margin := MarginContainer.new()
-	add_child(margin)
-	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	personal.add_child(margin)
+	margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	margin.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	for side in ["left", "right", "top", "bottom"]:
 		margin.add_theme_constant_override("margin_" + side, 24)
 	var column := VBoxContainer.new()
 	column.add_theme_constant_override("separation", 10)
 	margin.add_child(column)
 	var title := Label.new()
-	title.text = "Fledge  /  Teaching room"
+	title.text = "One-to-one teaching"
 	title.add_theme_font_size_override("font_size", 28)
 	column.add_child(title)
 	var intro := Label.new()
@@ -86,14 +114,14 @@ func _send(path: String, data: Dictionary) -> void:
 	_update_buttons()
 	var verb := HTTPClient.METHOD_GET if path == "/state" else HTTPClient.METHOD_POST
 	var body := "" if path == "/state" else JSON.stringify(data)
-	var err := http.request(ENDPOINT + path, ["Content-Type: application/json"], verb, body)
+	var err := http.request(Address.base_url() + path, ["Content-Type: application/json"], verb, body)
 	if err != OK:
 		_disconnected("Request could not start (%s)." % error_string(err))
 
 func _on_completed(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
 	busy = false
 	if result != HTTPRequest.RESULT_SUCCESS:
-		_disconnected("Start the local Fledge service on port 8765, then refresh the connection.")
+		_disconnected("Start the local Fledge service at %s, then refresh the connection." % Address.base_url())
 		return
 	var payload = JSON.parse_string(body.get_string_from_utf8())
 	if typeof(payload) != TYPE_DICTIONARY:

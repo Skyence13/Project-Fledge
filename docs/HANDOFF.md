@@ -20,4 +20,6 @@ A Wisp is one individual learning mind. The laboratory evolves populations of vi
 
 The [README](../README.md) gives the runnable entry points and the scope of the current prototype.
 
+The interactive lab supports counterbalanced lifetimes, manual or automatic teaching, an adjustable clock and continuous generation advancement. The lineage archive stores completed populations and the progress of the active run. Forking from a selected generation creates an independent line of offspring. The original line remains available. Distinguish these lineage-level branch records from a full pedigree for individual Wisps.
+
 Reproduce the small trials and automated tests first. Before interpreting an improvement, inspect the post-teaching and reversal scores alongside the simple associative baseline and controls. The first experiment to add is delayed feedback and retention after an intervening lesson. Keep the candidate and association baseline on the same teaching budget and record the first unprompted response to the original cue. Record hardware, runtime, seeds, search budget and source revision for longer studies.
