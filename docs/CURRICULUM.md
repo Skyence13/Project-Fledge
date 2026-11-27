@@ -69,6 +69,14 @@ In the repeated-cue diagnostic, an initial binary marker designates the early or
 
 Use `python -m wisp.marked_recall --run PATH --generation ROUND --seed SEED --split validation` for a registered evaluation. Confirmation uses the same seed and the distinct `confirmation` split. Check intact, trace-disabled, nonplastic, cue-indexed and marker-aware learners. Evaluate earlier abilities on a separately seeded bank using `wisp.mixed_delay`. Preserve the original source task and its reports.
 
+## Practising the early/late marker
+
+Start two copies of the same archived nominee with the same random state. Both receive 16 episodes in which the marker identifies which choice earned the grade. After each probe, the teaching arm receives an accurate grade on its response. The control receives a balanced grade assigned independently of the hidden target. Both arms then face fresh test episodes without feedback on the probe.
+
+Score the informative marker and the fully crossed, uninformative marker separately. Report the number of distinct test histories in which the early and late actions conflict, including the count under each marker. Practice can change which histories produce conflicting choices. Report the paired change in overall recall across all matched tests alongside the difference between the two conflict scores.
+
+Run `python -m wisp.marker_practice --run PATH --generation ROUND --seed SEED --split validation` after registering the source and study budget. Confirmation uses the same seed with the separate `confirmation` split. Evaluate the earlier lessons with a separately seeded bank of fresh copies.
+
 ## Preparing a successor study
 
 While a bounded study is underway, the research owner may stage a proposal in the local campaign's `proposals/` directory. Record the expected predecessor, question, eligible outcome, source, budget, controls, stopping rule and conditions requiring a fresh review. A proposal has no execution effect. Keep it outside `continuations/` and leave the active path with its current owner.
