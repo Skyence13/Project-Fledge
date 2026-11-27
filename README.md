@@ -163,6 +163,10 @@ With the seed-7 command above, each condition used 96 training lifetimes. The se
 
 ## Verify and continue
 
+The standalone [graded-vision pan experiment](docs/GRADED_PAN.md) exercises a fresh
+Wisp and reference predictors on synthetic stationary and moving targets through
+a brief shutter closure and changes in camera motor gain.
+
 ```sh
 python -m unittest discover -s tests -v
 ```
