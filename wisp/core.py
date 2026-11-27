@@ -199,7 +199,16 @@ class Wisp:
     def choose(self, cue: int) -> int:
         if cue not in (0, 1):
             raise ValueError("cue must be 0 or 1")
-        receptors = {SENSORS[0]: float(cue == 0), SENSORS[1]: float(cue == 1)}
+        return self._choose_levels(float(cue == 0), float(cue == 1), cue)
+
+    def choose_levels(self, left: float, right: float) -> int:
+        """Sample a motor response to two graded receptors; no discrete cue ID."""
+        if not (0 <= left <= 1 and 0 <= right <= 1):
+            raise ValueError("receptor levels must be between 0 and 1")
+        return self._choose_levels(left, right, None)
+
+    def _choose_levels(self, left, right, cue) -> int:
+        receptors = {SENSORS[0]: left, SENSORS[1]: right}
         # Two synchronous ticks allow a sensory signal to propagate through one interneuron.
         for _ in range(2):
             current = [0.0] * len(self.genome.nodes)
