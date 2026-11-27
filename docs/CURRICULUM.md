@@ -61,6 +61,20 @@ The supervisor advances each arm by up to five rounds per check. Once either arm
 
 Each qualified arm can continue through the remaining stages under the existing validation and confirmation rules. An unqualified arm stays at the comparison checkpoint. Use the saved matched result for a direct comparison because later follow-up scores can reflect different challenges and training budgets. The local worker stops for research review if neither arm qualifies by the common limit or once all qualified arms have finished or exhausted their remaining stages. Broader conclusions require replicate campaigns with fresh seeds and independently founded lineages.
 
+## Checking which earlier action a grade belongs to
+
+The single-grade source task presents the source cue once and immediately probes that cue after feedback. A learner can store the last action for each cue, hold the signed grade, then repeat or reverse the stored action when it sees the probe. This gives a nonprivileged reference for interpreting first-probe accuracy.
+
+In the repeated-cue diagnostic, an initial binary marker designates the early or late occurrence of a cue. Both occurrences elicit free choices. A grade for the designated choice precedes the probe. The informative condition follows the marker. The uninformative comparison crosses both possible credited occurrences with both hidden targets on the same pre-grade histories. The informative observations are a subset of that crossing. Report scores separately when the two actions agree and when they conflict. Count distinct conflict histories before interpreting the conflict score. The marker-aware lookup is supplied the public convention. A fresh archived Wisp has had no teaching on it.
+
+Use `python -m wisp.marked_recall --run PATH --generation ROUND --seed SEED --split validation` for a registered evaluation. Confirmation uses the same seed and the distinct `confirmation` split. Check intact, trace-disabled, nonplastic, cue-indexed and marker-aware learners. Evaluate earlier abilities on a separately seeded bank using `wisp.mixed_delay`. Preserve the original source task and its reports.
+
+## Preparing a successor study
+
+While a bounded study is underway, the research owner may stage a proposal in the local campaign's `proposals/` directory. Record the expected predecessor, question, eligible outcome, source, budget, controls, stopping rule and conditions requiring a fresh review. A proposal has no execution effect. Keep it outside `continuations/` and leave the active path with its current owner.
+
+At the review boundary, the research owner checks the archived reports, earlier-skill scores, existing children and operator holds under the shared writer locks. Only then may it register a single child, pin the predecessor review and source fingerprint, assign unused seeds, and advance the active path. A retry follows the registered child. Dashboard samples and health checks have no launch authority.
+
 ## When to experiment with brain structures
 
 A founder has four recurrent-network units including two designated motor units. Wiring-enabled descendants can add or remove connections, add or delete hidden units, or duplicate a hidden unit and part of its connectivity. Current limits are 12 units and 64 connections per genome. Rule-enabled descendants can change leaky/adaptive dynamics. During a lifetime, the current eligibility rule changes synapses feeding the motor units. Those mechanisms already allow circuits to differ. Duplicating an entire connected group, assigning anatomical regions, and experimentally silencing a group are future capabilities.
