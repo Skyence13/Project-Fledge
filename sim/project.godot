@@ -1,0 +1,16 @@
+; Project Fledge learning proof. Open this file in Godot 4.6 or later.
+config_version=5
+
+[application]
+config/name="Fledge Teaching Room"
+run/main_scene="res://teaching_room.tscn"
+config/features=PackedStringArray("4.6", "GL Compatibility")
+
+[display]
+window/size/viewport_width=1152
+window/size/viewport_height=760
+window/stretch/mode="canvas_items"
+
+[rendering]
+renderer/rendering_method="gl_compatibility"
+environment/defaults/default_clear_color=Color(0.045, 0.073, 0.102, 1)
