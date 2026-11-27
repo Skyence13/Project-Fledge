@@ -10,9 +10,15 @@ import random
 SENSORS = (-1, -2)
 MOTORS = (0, 1)
 MAX_NODES = 12
+PILOT_MAX_NODES = 24
 MAX_EDGES = 64
 WEIGHT_LIMIT = 3.0
 MAX_TRACE_DECAY = .95
+
+
+def _check_node_limit(node_limit):
+    if type(node_limit) is not int or not MAX_NODES <= node_limit <= PILOT_MAX_NODES:
+        raise ValueError("Choose a neuron ceiling from 12 to 24.")
 
 
 def _bound(value, low, high):
@@ -52,7 +58,8 @@ class Genome:
         return data
 
     @classmethod
-    def from_dict(cls, data: dict) -> Genome:
+    def from_dict(cls, data: dict, *, node_limit=MAX_NODES) -> Genome:
+        _check_node_limit(node_limit)
         decay = data.get("trace_decay", 0.0)
         if type(decay) not in (int, float) or not 0 <= decay <= MAX_TRACE_DECAY:
             raise ValueError("invalid eligibility trace decay")
@@ -64,7 +71,7 @@ class Genome:
         )
         ids = {node.id for node in genome.nodes}
         pairs = {(edge.source, edge.target) for edge in genome.edges}
-        if (len(ids) != len(genome.nodes) or len(ids) > MAX_NODES
+        if (len(ids) != len(genome.nodes) or len(ids) > node_limit
                 or not set(MOTORS) <= ids or any(i < 0 for i in ids)):
             raise ValueError("invalid neuron IDs or network size")
         if (len(pairs) != len(genome.edges) or len(pairs) > MAX_EDGES
@@ -91,7 +98,7 @@ def random_genome(rng: random.Random) -> Genome:
     return Genome(nodes, edges, rng.uniform(.24, .5))
 
 
-def _change_wiring(nodes, edges, rng):
+def _change_wiring(nodes, edges, rng, node_limit):
     ids = [node.id for node in nodes]
     hidden = [node for node in nodes if node.id not in MOTORS]
     pairs = {(edge.source, edge.target) for edge in edges}
@@ -104,7 +111,7 @@ def _change_wiring(nodes, edges, rng):
         operations.append("delete_edge")
     if hidden:
         operations.append("delete_node")
-    if len(nodes) < MAX_NODES and len(edges) < MAX_EDGES:
+    if len(nodes) < node_limit and len(edges) < MAX_EDGES:
         operations.append("add_node")
         if hidden:
             operations.append("duplicate_node")
@@ -120,7 +127,7 @@ def _change_wiring(nodes, edges, rng):
         nodes.remove(removed)
         edges[:] = [edge for edge in edges if removed.id not in (edge.source, edge.target)]
     else:
-        new_id = next(i for i in range(MAX_NODES) if i not in ids)
+        new_id = next(i for i in range(node_limit) if i not in ids)
         template = rng.choice(hidden or nodes)
         nodes.append(replace(template, id=new_id))
         if operation == "duplicate_node":
@@ -137,11 +144,14 @@ def _change_wiring(nodes, edges, rng):
 
 
 def mutate(genome: Genome, rng: random.Random, *, rules: bool, wiring: bool,
-           evolve_trace: bool = False) -> Genome:
+           evolve_trace: bool = False, node_limit=MAX_NODES) -> Genome:
     """Create an offspring from inherited parameters, never from lifetime weights."""
+    _check_node_limit(node_limit)
+    if len(genome.nodes) > node_limit:
+        raise ValueError("Parent exceeds the selected neuron ceiling.")
     nodes, edges = list(genome.nodes), list(genome.edges)
     if wiring:
-        _change_wiring(nodes, edges, rng)
+        _change_wiring(nodes, edges, rng, node_limit)
     # Preserve the post-wiring neuron list if this offspring later spends its
     # single rule mutation on trace decay. Other mutation draws stay matched.
     before_rule = nodes.copy() if rules and evolve_trace else None

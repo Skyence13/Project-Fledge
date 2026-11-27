@@ -12,7 +12,7 @@ import random
 from statistics import mean
 from time import perf_counter
 
-from .core import Genome, Wisp, mutate, random_genome
+from .core import MAX_NODES, Genome, Wisp, mutate, random_genome
 
 
 CONDITIONS = {
@@ -159,7 +159,7 @@ def score_candidate(args):
     return evaluate(Genome.from_dict(data), lessons)["summary"]["fitness"]
 
 
-def next_generation(population, scores, flags, seed, generation, *, evolve_trace=False):
+def next_generation(population, scores, flags, seed, generation, *, evolve_trace=False, node_limit=MAX_NODES):
     ranked = sorted(range(len(population)), key=lambda i: -scores[i])
     parents = ranked[:max(1, len(ranked) // 2)]
     next_pop = [population[ranked[0]]]
@@ -167,8 +167,8 @@ def next_generation(population, scores, flags, seed, generation, *, evolve_trace
         parent_rng = random.Random(derived_seed(seed, "parent", generation, index))
         mutation_rng = random.Random(derived_seed(seed, "mutate", generation, index))
         parent = population[parent_rng.choice(parents)]
-        child = mutate(Genome.from_dict(parent.to_dict()), mutation_rng,
-                       rules=flags[0], wiring=flags[1], evolve_trace=evolve_trace)
+        child = mutate(Genome.from_dict(parent.to_dict(), node_limit=node_limit), mutation_rng,
+                       rules=flags[0], wiring=flags[1], evolve_trace=evolve_trace, node_limit=node_limit)
         next_pop.append(child)
     return next_pop
 
