@@ -1,0 +1,31 @@
+{
+  "package": "owner-v1",
+  "provenance": "verified_source_snapshot",
+  "reference_revision": "c3035d31e4636c6c05991e3e37b2439013b039b2",
+  "reference_tree": "4fef6dcfd3c8e40cd810a90ded34b409962e4872",
+  "schema": 1,
+  "source_sha256": {
+    "Install-FledgeCoordinator.cmd": "94e7dcba9c1b4b553352f78928c7be651861417682628142121a7fc70c02d5e5",
+    "bounded_evaluation_worker.py": "0eec94770f21e2b867abe5215f7ed82c09d816db3527391d5ddd2400b94179f0",
+    "fledge-monitor/RESEARCH_OWNER.md": "b43575e07927f4ff6d474c7ad0ce47226c28315950777028d7782d46965912fc",
+    "fledge_breeding_worker.py": "56cdaa770258ac6782d8728288c21cdd1be5e93d511c0d59b8ff2702c0a65296",
+    "fledge_completion_watch.py": "e35139b5fdf5b4b5ad30bf469f8a9ffc478b62ce94e4b2c70f3f32a80639aaf1",
+    "fledge_coordinator.py": "91982dc2ad12f4878b40abe050e795092583d825ec50c7e6afda8a23f215fe33",
+    "fledge_events.py": "9b5ec509d911cce44bb9d8beb57e314a42c7ec8d23175028f575ee4c4284131f",
+    "fledge_generated.py": "a442195c5b600026fa8e25c215f842ede2b09f779e5bc7ddd740ea0275d8f6c2",
+    "fledge_generic_worker.py": "8a10c39a3c549de11db715c1619ec5453b1c6a7f3b1ff0cded05152ed50a3a79",
+    "fledge_milestone.py": "187855825f97207a66a67ef96dd2f6b546e48964d16c9b014ec95ecef5427a07",
+    "fledge_prepare.py": "1ccc05996214cddfdd2fdb714c0392be5a1653a417e2c5f38525aae90024fc7f",
+    "fledge_research_owner.py": "53197c101f7913e7c0f52fa83b68fb07995b2a85d8edcf03bef28439f2f8ebb7",
+    "fledge_source_archive.py": "c377498cc1f501f36583113243f76aab90d8635accb9c3a35cf2ca9b707e0752",
+    "install_fledge_coordinator.py": "992978940b31a1f1efd2a4bb248eb39b99ed085a9158f617682c0d25568ee07f",
+    "source_review_worker.py": "90a4a09b71f3313ef6894a4c1b4470c4815847be05bf7738e9334cf3be3d6746",
+    "test_bounded_evaluation_worker.py": "39bd8b011cea0c6eb29fdcce0b129819a24015138fb5280b5d9d01e2029ec165",
+    "test_fledge_coordinator.py": "b7b4f9f5d900b02f42b07c313682ca57c5edc1f552e43f152782ba7805780396",
+    "test_fledge_generated.py": "ef40f96a96c15671bd66a8a16d468a4f8b47eba6d5422c02a6ea83f157e77e0f",
+    "test_fledge_milestone.py": "e44091b0f993e8d15026fab3e02435a396b8f05c5dca4c88aefee1705177b714",
+    "test_fledge_research_owner.py": "c0c683bdffb217962e7a1cbbe882cb7085113b93116008ec38582034431c6ade",
+    "test_fledge_source_archive.py": "4b7ae183694eeb457d383628c503f18a3571e04e0cb009ed17ddce024bf762e1",
+    "test_install_fledge_coordinator.py": "059d6ebed65de24b7396e83a85aa134f4e241a51a229ded16854f5ea3324d675"
+  }
+}
