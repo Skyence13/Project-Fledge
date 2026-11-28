@@ -1,0 +1,11 @@
+{
+  "package": "architecture-v1",
+  "provenance": "verified_source_snapshot",
+  "reference_revision": "c3035d31e4636c6c05991e3e37b2439013b039b2",
+  "reference_tree": "4fef6dcfd3c8e40cd810a90ded34b409962e4872",
+  "schema": 1,
+  "source_sha256": {
+    "fledge_architecture.py": "1292198f0e970834cb30e24f95955da06c56b3c9de2452dacccf4080a94ed26c",
+    "test_fledge_architecture.py": "83159f6f9558fec0788f2650bab7db9a08c820ff61c59fed20b12c83c2d93ede"
+  }
+}
