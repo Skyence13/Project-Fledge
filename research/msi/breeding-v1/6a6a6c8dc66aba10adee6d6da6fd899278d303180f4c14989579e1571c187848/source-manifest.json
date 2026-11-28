@@ -1,0 +1,14 @@
+{
+  "package": "breeding-v1",
+  "provenance": "reconstructed_from_registered_hashes",
+  "reference_revision": "c3035d31e4636c6c05991e3e37b2439013b039b2",
+  "reference_tree": "4fef6dcfd3c8e40cd810a90ded34b409962e4872",
+  "schema": 1,
+  "source_sha256": {
+    "bounded_evaluation_worker.py": "0eec94770f21e2b867abe5215f7ed82c09d816db3527391d5ddd2400b94179f0",
+    "fledge_blank_breeding.py": "437895d710261348264f7baa85ca363e186975b62015d99c335afa2f42a3de56",
+    "fledge_breeding_proposal.md": "2fe0d2ef5db7042ccafc1b72a4932830a34db4ed5207377d5ca11bf1bfbc889d",
+    "fledge_breeding_worker.py": "56cdaa770258ac6782d8728288c21cdd1be5e93d511c0d59b8ff2702c0a65296",
+    "test_fledge_blank_breeding.py": "a492ca5c7a4e3a17cf8562033aabef633fc9a42060c30974e08e415972ad69c7"
+  }
+}
