@@ -1,0 +1,21 @@
+{
+  "package": "monitor-v1",
+  "provenance": "verified_source_snapshot",
+  "reference_revision": "c3035d31e4636c6c05991e3e37b2439013b039b2",
+  "reference_tree": "4fef6dcfd3c8e40cd810a90ded34b409962e4872",
+  "schema": 1,
+  "source_sha256": {
+    "Start-Fledge-Monitor.cmd": "475eeb5d7cacf069aa6264fe7d534c2edee6c0cfb178150cdcfe9ba97db4ba28",
+    "aggregate_cache.py": "376ac476b69a2b6249ed20642f15cc2409a3687c6b81f885942ce262280dcaed",
+    "build.mjs": "5025330f71d438c8cbaf55e43b2adf917045ad07baf6f823b09e1ebd99b8e619",
+    "local-reader/tests/test_dashboard_summary.py": "fd2d8b52e6f472d4ed8f17d79e4acd87ea7118ca833ce6b4067f99d11d33c231",
+    "local-reader/wisp/dashboard_summary.py": "5ed87fbbf59af9c40da6829e743fc33601a02be3ead99c19310e1115329ee597",
+    "local_monitor.py": "5e308b9bd505abc57e7855bfd54bc1029c60719081098de3ea0abbed84982148",
+    "relay.py": "c5b33ae0e7ce7077a2ff7465844d3b8b8abc5ad9dd86030edd4fd1f05a363717",
+    "test_aggregate_cache.py": "f89e153abf9124c3d768218cf40238a304b66fe91367c3ce6a31d769f53b7234",
+    "ui/app.js": "ebc721b2a034771816fa280c1c814643b888d0d03f7fd5771e1f5d8a755a01c9",
+    "ui/index.html": "3c71f95d48d510bd73e18fdc088c10216be07a851cbd7bd528424f651e9e13ab",
+    "ui/style.css": "b198d0ceb5399edf0fcf102a2333edf7e6e37b194a582c41c4d1b62886ee0ca5",
+    "worker.mjs": "7b2facdbdb1b1fc23166f133ba27c5aaa1b0df6d13bc132f8d5094c25dfbac01"
+  }
+}

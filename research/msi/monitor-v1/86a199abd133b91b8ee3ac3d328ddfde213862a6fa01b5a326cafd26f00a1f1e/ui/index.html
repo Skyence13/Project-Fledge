@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#122a30">
+  <title>Project Fledge · Campaign monitor</title>
+  <link rel="stylesheet" href="/style.css">
+  <script defer src="/app.js"></script>
+</head>
+<body>
+  <header><div class="bar wrap">
+    <div class="brand"><i class="feather" aria-hidden="true"></i>Project Fledge</div>
+    <nav aria-label="Page sections"><a href="#overview">Overview</a><a href="#network">Network</a><a href="#history">History</a></nav>
+  </div></header>
+  <main class="wrap" id="overview">
+    <section class="titlebar">
+      <div><h1>Campaign monitor</h1><p id="stamp">Reading the latest lab observation…</p></div>
+      <button id="refresh" type="button"><span aria-hidden="true">↻</span> Refresh</button>
+    </section>
+    <div id="warning" role="status" hidden></div>
+    <section class="status card" aria-label="Observed campaign status">
+      <div><div class="eyebrow">Lab activity</div><div class="reading"><i id="signal"></i><strong id="activity">Checking…</strong></div></div>
+      <div><div class="eyebrow">Campaign phase</div><strong id="phase">—</strong></div>
+      <div><div class="eyebrow">Parent generation</div><strong id="generation">—</strong></div>
+    </section>
+    <section class="card" id="research-progress" hidden aria-label="Current research">
+      <div class="eyebrow">Current research</div><h2 id="progress-name"></h2>
+      <p class="description" id="progress-question"></p><p id="progress-count"></p>
+      <p id="decision-notice" hidden></p>
+    </section>
+    <div class="grid">
+      <section class="study card" aria-labelledby="study-title">
+        <div class="eyebrow">Last completed study</div>
+        <h2 id="study-title">Loading study…</h2><p id="objective" class="description"></p>
+        <div id="assay" hidden>
+          <div class="chart-head"><h3 id="assay-title">Source recall</h3><div id="split-switch" class="switch" role="group" aria-label="Evaluation set"><button type="button" data-split="validation">Validation</button><button type="button" data-split="confirmation" aria-pressed="true">Confirmation</button></div></div>
+          <div id="bars" aria-live="polite"></div>
+          <div id="effect" class="effect"></div>
+        </div>
+        <p id="metrics-missing" class="description" hidden>Reviewed scores are unavailable for this bank.</p>
+        <div id="retention" class="retention" hidden><h3>Earlier skills</h3><div id="old-skills"></div></div>
+        <div id="study-foot" class="muted"></div>
+      </section>
+      <section class="card arms-panel" aria-labelledby="arms-heading"><div class="eyebrow">Fixed-delay ladder</div><h2 id="arms-heading">Campaign arms</h2><div id="arms"></div></section>
+    </div>
+    <section class="card network-panel" id="network" aria-labelledby="network-title">
+      <div class="network-copy">
+        <div class="eyebrow">Founder schematic</div>
+        <h2 id="network-title">Inside a Wisp</h2>
+        <p>Each founder starts with the same 12 connections. Initial weights vary, and descendants can evolve different wiring.</p>
+        <p>One receptor lights up for each cue. After two network updates, the relative activity of the motor neurons sets the probability of turning left or right.</p>
+        <label for="pathway">Highlight connections</label>
+        <select id="pathway">
+          <option value="all">All pathways</option>
+          <option value="sensory">From the receptors</option>
+          <option value="recurrent">Between hidden neurons</option>
+          <option value="motor">Into motor neurons</option>
+        </select>
+      </div>
+      <figure class="network-figure">
+        <svg id="founder-network" viewBox="0 0 510 276" role="img" aria-labelledby="net-title net-desc" xmlns="http://www.w3.org/2000/svg">
+          <title id="net-title">Directed connections in a founder Wisp</title>
+          <desc id="net-desc">Each light receptor connects to both hidden neurons and both motor neurons. Hidden neurons H2 and H3 connect in both directions. H2 also connects to the left motor and H3 to the right motor.</desc>
+          <defs>
+            <marker id="net-arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0 0 6 3 0 6Z" fill="#375c70"/></marker>
+            <marker id="motor-arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0 0 6 3 0 6Z" fill="#137969"/></marker>
+          </defs>
+          <g class="net-head"><text x="55" y="25">Receptors</text><text x="255" y="25">Hidden</text><text x="455" y="25">Motors</text></g>
+          <g class="net-edges">
+            <path data-edge="-1,2" class="sensory" d="M80 96 H226"/>
+            <path data-edge="-1,3" class="sensory" d="M76 108 L230 196"/>
+            <path data-edge="-2,2" class="sensory" d="M76 198 L230 109"/>
+            <path data-edge="-2,3" class="sensory" d="M80 210 H226"/>
+            <path data-edge="-1,0" class="sensory motor" d="M71 77 C158 29 352 29 436 77"/>
+            <path data-edge="-1,1" class="sensory motor" d="M79 101 C172 118 354 176 429 201"/>
+            <path data-edge="-2,0" class="sensory motor" d="M79 205 C172 188 354 130 429 105"/>
+            <path data-edge="-2,1" class="sensory motor" d="M71 229 C158 276 352 276 436 229"/>
+            <path data-edge="2,3" class="recurrent" d="M245 118 C233 140 233 166 244 186"/>
+            <path data-edge="3,2" class="recurrent" d="M265 188 C277 166 277 140 266 120"/>
+            <path data-edge="2,0" class="motor" d="M280 96 H426"/>
+            <path data-edge="3,1" class="motor" d="M280 210 H426"/>
+          </g>
+          <g class="net-nodes">
+            <g transform="translate(55 96)"><circle r="24"/><text>A</text></g>
+            <g transform="translate(55 210)"><circle r="24"/><text>B</text></g>
+            <g class="hidden-unit" transform="translate(255 96)"><circle r="24"/><text>H2</text></g>
+            <g class="hidden-unit" transform="translate(255 210)"><circle r="24"/><text>H3</text></g>
+            <g class="motor-unit" transform="translate(455 96)"><circle r="24"/><text>L</text></g>
+            <g class="motor-unit" transform="translate(455 210)"><circle r="24"/><text>R</text></g>
+          </g>
+        </svg>
+        <figcaption id="pathway-caption" aria-live="polite">Arrows show signal direction. The six green connections into motor neurons can change with feedback.</figcaption>
+      </figure>
+    </section>
+    <section class="card history" id="transitions-panel" hidden><h2>Recent activity</h2><div id="transitions"></div></section>
+    <section class="card history" id="history"><h2>Study history</h2><div id="events"></div></section>
+    <footer><span>Project Fledge</span><span>Read-only monitor · Page checks every 5 seconds</span></footer>
+  </main>
+</body>
+</html>
