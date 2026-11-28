@@ -1,0 +1,19 @@
+{
+  "package": "lineage-v1",
+  "provenance": "pinned_before_execution",
+  "reference_revision": "c3035d31e4636c6c05991e3e37b2439013b039b2",
+  "reference_tree": "4fef6dcfd3c8e40cd810a90ded34b409962e4872",
+  "schema": 1,
+  "source_sha256": {
+    "bounded_evaluation_worker.py": "0eec94770f21e2b867abe5215f7ed82c09d816db3527391d5ddd2400b94179f0",
+    "fledge_architecture.py": "1292198f0e970834cb30e24f95955da06c56b3c9de2452dacccf4080a94ed26c",
+    "fledge_blank_breeding.py": "437895d710261348264f7baa85ca363e186975b62015d99c335afa2f42a3de56",
+    "fledge_generated.py": "a442195c5b600026fa8e25c215f842ede2b09f779e5bc7ddd740ea0275d8f6c2",
+    "fledge_generic_worker.py": "8a10c39a3c549de11db715c1619ec5453b1c6a7f3b1ff0cded05152ed50a3a79",
+    "fledge_lineage_protocol.md": "584df09550154d715b73b95796f62a94402abf8ab035e31157b8b62427af81de",
+    "fledge_lineage_science.py": "de70796ac1842c6aeb262322e0686df73fab334b62f4c0839f12d78df5c9dec8",
+    "fledge_lineage_worker.py": "67a13199654d7cd0016795d5d0618237fed662da8c813cb437e082e8316da605",
+    "fledge_prepare.py": "1ccc05996214cddfdd2fdb714c0392be5a1653a417e2c5f38525aae90024fc7f",
+    "test_fledge_lineage.py": "67d562dccab24fce6b5fbace3e432edcf22b0b61fa7050f1730a8cfc1726d6ff"
+  }
+}
